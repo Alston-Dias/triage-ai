@@ -140,7 +140,10 @@ class Source(BaseModel):
     type: str          # cloudwatch | datadog | grafana | prometheus | pagerduty | custom
     webhook_url: Optional[str] = None
     api_key: Optional[str] = None
+    ingest_token: str = Field(default_factory=lambda: uuid.uuid4().hex)
     enabled: bool = True
+    last_ingested_at: Optional[str] = None
+    ingest_count: int = 0
     created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
 
@@ -239,6 +242,9 @@ async def on_startup():
         ]
         for name, t in defaults:
             await db.sources.insert_one(Source(name=name, type=t).model_dump())
+    # Backfill ingest_token for any pre-existing sources missing it
+    async for s in db.sources.find({"$or": [{"ingest_token": {"$exists": False}}, {"ingest_token": None}, {"ingest_token": ""}]}, {"_id": 0, "id": 1}):
+        await db.sources.update_one({"id": s["id"]}, {"$set": {"ingest_token": uuid.uuid4().hex}})
     logger.info("Startup seeding complete")
 
 
@@ -632,6 +638,188 @@ async def toggle_source(source_id: str, current_user: dict = Depends(get_current
     new_state = not src.get("enabled", True)
     await db.sources.update_one({"id": source_id}, {"$set": {"enabled": new_state}})
     return {"id": source_id, "enabled": new_state}
+
+
+# ---------- WEBHOOK INGESTION ADAPTERS ----------
+def _norm_severity(val: str) -> Severity:
+    if not val:
+        return "medium"
+    v = val.lower().strip()
+    if v in ("critical", "crit", "p1", "fatal", "sev1", "alarm"): return "critical"
+    if v in ("high", "error", "p2", "sev2", "warning"): return "high"
+    if v in ("medium", "med", "warn", "p3", "sev3", "info"): return "medium"
+    if v in ("low", "p4", "sev4", "ok", "resolved"): return "low"
+    return "medium"
+
+
+def _adapt_payload(stype: str, payload: dict) -> List[dict]:
+    """Return a list of normalized alert dicts ({source, severity, service, region, title, description})."""
+    out: List[dict] = []
+    try:
+        if stype == "cloudwatch":
+            # SNS message wrapper or direct alarm
+            msg = payload
+            if "Records" in payload and payload["Records"]:
+                inner = payload["Records"][0].get("Sns", {}).get("Message", "{}")
+                if isinstance(inner, str):
+                    try: msg = json.loads(inner)
+                    except Exception: msg = {}
+            sev_map = {"ALARM": "critical", "OK": "low", "INSUFFICIENT_DATA": "medium"}
+            out.append({
+                "source": "cloudwatch",
+                "severity": sev_map.get(msg.get("NewStateValue", ""), "high"),
+                "service": msg.get("Trigger", {}).get("Namespace", msg.get("AlarmName", "unknown")),
+                "region": msg.get("Region", "us-east-1"),
+                "title": msg.get("AlarmName", "CloudWatch alarm"),
+                "description": msg.get("AlarmDescription", "") or msg.get("NewStateReason", ""),
+            })
+        elif stype == "datadog":
+            sev = _norm_severity(payload.get("alert_type") or payload.get("priority"))
+            out.append({
+                "source": "datadog",
+                "severity": sev,
+                "service": payload.get("source_type_name") or payload.get("aggreg_key", "unknown"),
+                "region": payload.get("org", {}).get("region") if isinstance(payload.get("org"), dict) else payload.get("region", "us-east-1"),
+                "title": payload.get("title") or payload.get("event_title", "Datadog alert"),
+                "description": payload.get("body") or payload.get("text", ""),
+            })
+        elif stype == "pagerduty":
+            ev = payload.get("event") or payload
+            data = ev.get("data") or ev
+            out.append({
+                "source": "pagerduty",
+                "severity": _norm_severity(data.get("urgency") or data.get("severity")),
+                "service": (data.get("service") or {}).get("summary") if isinstance(data.get("service"), dict) else (data.get("service") or "unknown"),
+                "region": data.get("region", "us-east-1"),
+                "title": data.get("summary") or data.get("title", "PagerDuty incident"),
+                "description": data.get("description", ""),
+            })
+        elif stype in ("grafana", "prometheus"):
+            # Both use Alertmanager-style payload
+            for a in payload.get("alerts", [payload]):
+                labels = a.get("labels", {}) or {}
+                anns = a.get("annotations", {}) or {}
+                out.append({
+                    "source": stype,
+                    "severity": _norm_severity(labels.get("severity") or a.get("severity")),
+                    "service": labels.get("service") or labels.get("job") or labels.get("alertname", "unknown"),
+                    "region": labels.get("region") or labels.get("instance", "global"),
+                    "title": anns.get("summary") or labels.get("alertname") or "Alert",
+                    "description": anns.get("description", ""),
+                })
+        else:  # custom / passthrough
+            out.append({
+                "source": stype or "custom",
+                "severity": _norm_severity(payload.get("severity")),
+                "service": payload.get("service", "unknown"),
+                "region": payload.get("region", "global"),
+                "title": payload.get("title", "Custom alert"),
+                "description": payload.get("description", ""),
+            })
+    except Exception as e:
+        logger.exception("Adapter failed: %s", e)
+    return out
+
+
+SAMPLE_PAYLOADS = {
+    "cloudwatch": {
+        "AlarmName": "payments-api-5xx",
+        "AlarmDescription": "5xx error rate exceeded threshold",
+        "NewStateValue": "ALARM",
+        "NewStateReason": "Threshold crossed: 1 datapoint > 5%",
+        "Region": "us-east-1",
+        "Trigger": {"Namespace": "payments-api"},
+    },
+    "datadog": {
+        "title": "[Triggered] High CPU on payments-db",
+        "body": "host:payments-db-01 cpu=96%",
+        "alert_type": "error",
+        "source_type_name": "payments-db",
+        "region": "us-east-1",
+    },
+    "pagerduty": {
+        "event": {"event_type": "incident.trigger", "data": {
+            "summary": "Auth service degraded",
+            "urgency": "high",
+            "service": {"summary": "auth-service"},
+            "description": "p95 latency > 1s",
+        }},
+    },
+    "grafana": {
+        "alerts": [{
+            "status": "firing",
+            "labels": {"severity": "critical", "service": "edge-cdn", "region": "global", "alertname": "CacheHitRatioLow"},
+            "annotations": {"summary": "Cache hit ratio dropped to 41%", "description": "Below 80% threshold for 5m"},
+        }],
+    },
+    "prometheus": {
+        "alerts": [{
+            "status": "firing",
+            "labels": {"severity": "high", "service": "checkout-svc", "region": "eu-west-1", "alertname": "PodMemoryHigh"},
+            "annotations": {"summary": "Memory utilization 92% on pod-7", "description": "Sustained for 10m"},
+        }],
+    },
+    "custom": {
+        "severity": "high",
+        "service": "my-service",
+        "region": "us-east-1",
+        "title": "Custom alert from external system",
+        "description": "Some context here",
+    },
+}
+
+
+@api_router.post("/sources/{source_id}/ingest")
+async def webhook_ingest(source_id: str, payload: dict, request: Request):
+    """Public endpoint — external monitoring tools push alerts here.
+    Auth: ?token=<ingest_token> query param OR X-Ingest-Token header."""
+    src = await db.sources.find_one({"id": source_id}, {"_id": 0})
+    if not src:
+        raise HTTPException(404, "Source not found")
+    if not src.get("enabled", True):
+        raise HTTPException(403, "Source disabled")
+
+    provided = request.query_params.get("token") or request.headers.get("X-Ingest-Token", "")
+    if not provided or provided != src.get("ingest_token"):
+        raise HTTPException(401, "Invalid or missing ingest token")
+
+    normalized = _adapt_payload(src["type"], payload)
+    if not normalized:
+        raise HTTPException(400, "Could not parse payload")
+
+    created = []
+    for n in normalized:
+        a = Alert(**n)
+        await db.alerts.insert_one(a.model_dump())
+        created.append(a.model_dump())
+
+    await db.sources.update_one(
+        {"id": source_id},
+        {"$set": {"last_ingested_at": datetime.now(timezone.utc).isoformat()},
+         "$inc": {"ingest_count": len(created)}}
+    )
+    return {"ingested": len(created), "alerts": created}
+
+
+@api_router.post("/sources/{source_id}/test")
+async def test_source(source_id: str, current_user: dict = Depends(get_current_user)):
+    """Auth-protected: fires a sample payload at the source's own ingest endpoint to verify wiring."""
+    src = await db.sources.find_one({"id": source_id}, {"_id": 0})
+    if not src:
+        raise HTTPException(404, "Not found")
+    sample = SAMPLE_PAYLOADS.get(src["type"], SAMPLE_PAYLOADS["custom"])
+    normalized = _adapt_payload(src["type"], sample)
+    created = []
+    for n in normalized:
+        a = Alert(**n)
+        await db.alerts.insert_one(a.model_dump())
+        created.append(a.model_dump())
+    await db.sources.update_one(
+        {"id": source_id},
+        {"$set": {"last_ingested_at": datetime.now(timezone.utc).isoformat()},
+         "$inc": {"ingest_count": len(created)}}
+    )
+    return {"ingested": len(created), "sample_payload": sample, "alerts": created}
 
 
 # ---------- ANALYTICS ----------
