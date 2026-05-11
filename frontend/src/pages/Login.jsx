@@ -2,12 +2,12 @@ import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { login as apiLogin } from '../lib/api';
 import { useAuth } from '../lib/auth';
-import { Zap, Lock, ArrowRight } from 'lucide-react';
+import { Zap, ArrowRight } from 'lucide-react';
 
 const DEMO_USERS = [
-  { email: 'admin@triage.ai', password: 'admin123', label: 'Admin' },
-  { email: 'sre1@triage.ai', password: 'sre123', label: 'Alex Chen · On-Call' },
-  { email: 'sre2@triage.ai', password: 'sre123', label: 'Maya Patel · On-Call' },
+  { email: 'admin@triage.ai',  password: 'admin123',  label: 'Admin' },
+  { email: 'sre1@triage.ai',   password: 'sre123',    label: 'On-call · Alex' },
+  { email: 'sre2@triage.ai',   password: 'sre123',    label: 'On-call · Maya' },
   { email: 'viewer@triage.ai', password: 'viewer123', label: 'Viewer' },
 ];
 
@@ -36,67 +36,69 @@ export default function Login() {
   const quick = (u) => { setEmail(u.email); setPassword(u.password); };
 
   return (
-    <div className="min-h-screen bg-[#0A0A0A] grid-bg flex items-center justify-center p-6">
-      <div className="w-full max-w-4xl grid grid-cols-1 lg:grid-cols-2 border border-[#1f1f1f] bg-[#0d0d0d]">
+    <div className="min-h-screen bg-[#0A0A0A] flex items-center justify-center p-6">
+      <div className="w-full max-w-5xl grid grid-cols-1 lg:grid-cols-2 rounded-2xl overflow-hidden border border-[#1f1f1f] bg-[#0d0d0d] shadow-2xl">
         {/* Left brand */}
-        <div className="p-10 border-b lg:border-b-0 lg:border-r border-[#1f1f1f] flex flex-col justify-between scanlines">
+        <div className="p-12 border-b lg:border-b-0 lg:border-r border-[#1f1f1f] flex flex-col justify-between bg-gradient-to-br from-[#D4AF37]/[0.04] via-transparent to-transparent">
           <div>
-            <div className="flex items-center gap-2">
-              <Zap size={22} fill="#D4AF37" color="#D4AF37" />
-              <div className="font-display font-black text-2xl tracking-tighter">TRIAGE<span className="text-[#D4AF37]">AI</span></div>
+            <div className="flex items-center gap-2.5">
+              <div className="w-10 h-10 rounded-lg bg-[#D4AF37]/10 border border-[#D4AF37]/30 flex items-center justify-center">
+                <Zap size={20} fill="#D4AF37" color="#D4AF37" />
+              </div>
+              <div className="font-display font-black text-2xl tracking-tight">Triage<span className="text-[#D4AF37]">AI</span></div>
             </div>
-            <div className="mt-12">
-              <div className="text-[10px] tracking-[0.3em] uppercase text-neutral-500 mb-3">// Operator Console</div>
-              <h1 className="font-display text-4xl font-black tracking-tighter leading-[1.05]">
-                CORRELATE.<br />ANALYZE.<br /><span className="text-[#D4AF37]">RESOLVE.</span>
+            <div className="mt-16">
+              <div className="text-xs text-neutral-500 mb-3">AI-powered incident triage</div>
+              <h1 className="font-display text-5xl font-black tracking-tight leading-[1.05]">
+                Correlate.<br />Analyze.<br /><span className="text-[#D4AF37]">Resolve.</span>
               </h1>
-              <p className="text-xs text-neutral-400 mt-4 leading-relaxed max-w-sm">
-                AI-powered incident triage for cloud operations. Sign in to access live alerts, AI hypotheses, and remediation playbooks.
+              <p className="text-sm text-neutral-400 mt-6 leading-relaxed max-w-md">
+                Sign in to your operator console — correlate alerts, run AI-powered triage with Claude Sonnet 4.5, and ship remediation playbooks straight to your team.
               </p>
             </div>
           </div>
-          <div className="text-[10px] text-neutral-600 tracking-widest mt-12">v0.2.0 · MVP · CLAUDE-SONNET-4.5</div>
+          <div className="text-xs text-neutral-600 mt-12">v0.4.0 · Claude Sonnet 4.5</div>
         </div>
+
         {/* Right form */}
-        <div className="p-10">
-          <div className="text-[10px] tracking-[0.25em] uppercase text-neutral-500 mb-2">Authenticate</div>
-          <h2 className="font-display text-2xl font-black tracking-tighter mb-6">SIGN IN</h2>
-          <form onSubmit={submit} className="space-y-4">
+        <div className="p-12">
+          <div className="text-xs text-neutral-500 mb-2">Authentication</div>
+          <h2 className="font-display text-2xl font-black tracking-tight mb-8">Sign in</h2>
+
+          <form onSubmit={submit} className="space-y-5">
             <div>
-              <label className="text-[10px] tracking-[0.2em] uppercase text-neutral-500">Email</label>
+              <label className="text-xs text-neutral-400 mb-1.5 block">Email</label>
               <input
                 data-testid="login-email"
                 type="email" value={email} onChange={e=>setEmail(e.target.value)}
-                className="mt-1 w-full bg-[#0a0a0a] border border-[#262626] focus:border-[#D4AF37] text-white text-sm px-3 py-2.5 outline-none font-mono" />
+                className="w-full bg-[#0a0a0a] border border-[#262626] rounded-lg focus:border-[#D4AF37] text-white text-sm px-3.5 py-3 outline-none transition-colors" />
             </div>
             <div>
-              <label className="text-[10px] tracking-[0.2em] uppercase text-neutral-500">Password</label>
+              <label className="text-xs text-neutral-400 mb-1.5 block">Password</label>
               <input
                 data-testid="login-password"
                 type="password" value={password} onChange={e=>setPassword(e.target.value)}
-                className="mt-1 w-full bg-[#0a0a0a] border border-[#262626] focus:border-[#D4AF37] text-white text-sm px-3 py-2.5 outline-none font-mono" />
+                className="w-full bg-[#0a0a0a] border border-[#262626] rounded-lg focus:border-[#D4AF37] text-white text-sm px-3.5 py-3 outline-none transition-colors" />
             </div>
-            {err && <div className="text-[11px] text-[#FF3B30] tracking-wider" data-testid="login-error">{err}</div>}
+            {err && <div className="text-xs text-[#FF3B30]" data-testid="login-error">{err}</div>}
             <button
               type="submit" disabled={loading}
               data-testid="login-submit"
-              className="w-full flex items-center justify-center gap-2 bg-[#D4AF37] text-black font-bold tracking-[0.18em] uppercase text-[11px] py-3 hover:bg-[#e6c14d] disabled:opacity-50 transition-colors">
-              {loading ? 'Authenticating...' : <>Sign In <ArrowRight size={14} /></>}
+              className="w-full flex items-center justify-center gap-2 bg-[#D4AF37] text-black font-semibold text-sm py-3 rounded-lg hover:bg-[#e6c14d] disabled:opacity-50 hover-lift transition-colors">
+              {loading ? 'Authenticating…' : <>Sign In <ArrowRight size={15} /></>}
             </button>
           </form>
 
-          <div className="mt-6">
-            <div className="text-[10px] tracking-[0.25em] uppercase text-neutral-500 mb-2 flex items-center gap-2">
-              <Lock size={11} /> Demo accounts
-            </div>
+          <div className="mt-8">
+            <div className="text-xs text-neutral-500 mb-3">Quick access · demo accounts</div>
             <div className="grid grid-cols-2 gap-2">
               {DEMO_USERS.map(u => (
                 <button
                   key={u.email} type="button" onClick={()=>quick(u)}
                   data-testid={`demo-user-${u.email.split('@')[0]}`}
-                  className="text-left text-[10px] px-2.5 py-2 border border-[#262626] hover:border-[#404040] text-neutral-400 hover:text-white transition-colors">
-                  <div className="font-mono">{u.email}</div>
-                  <div className="text-[9px] text-neutral-600 mt-0.5 tracking-widest uppercase">{u.label}</div>
+                  className="text-left text-xs px-3 py-2.5 rounded-lg border border-[#262626] hover:border-[#D4AF37]/40 hover:bg-[#D4AF37]/[0.04] text-neutral-300 transition-colors">
+                  <div className="font-mono text-[11px]">{u.email}</div>
+                  <div className="text-[10px] text-neutral-500 mt-0.5">{u.label}</div>
                 </button>
               ))}
             </div>
