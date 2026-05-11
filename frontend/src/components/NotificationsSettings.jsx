@@ -103,22 +103,24 @@ export default function NotificationsSettings() {
   const meta = CHANNEL_META[form.type];
 
   return (
-    <section className="border border-[#1f1f1f] mb-4" data-testid="notifications-section">
-      <div className="px-4 py-3 border-b border-[#1f1f1f] flex items-center gap-2">
-        <Bell size={14} color="#D4AF37" />
-        <h2 className="text-[11px] tracking-[0.25em] uppercase text-neutral-300 font-display font-bold">Notification Channels</h2>
-        {!isAdmin && <span className="ml-2 text-[10px] text-neutral-500 tracking-widest uppercase">· read-only · admin only</span>}
-        <div className="ml-auto">
-          {isAdmin && (
-            <button data-testid="add-channel-btn" onClick={startAdd} className="flex items-center gap-1.5 px-2.5 py-1.5 border border-[#262626] hover:border-[#D4AF37] text-[10px] tracking-[0.18em] uppercase">
-              <Plus size={11} /> Add Channel
-            </button>
-          )}
+    <section className="rounded-xl border border-[#1f1f1f] bg-[#0d0d0d] mb-4" data-testid="notifications-section">
+      <div className="px-6 py-4 border-b border-[#1f1f1f] flex items-center gap-3">
+        <Bell size={16} strokeWidth={1.75} color="#D4AF37" />
+        <div className="flex-1">
+          <h3 className="font-display font-bold text-base tracking-tight text-white">Notification Channels</h3>
+          <div className="text-xs text-neutral-500 mt-0.5">
+            {isAdmin ? 'Send notifications to Slack, Teams, Discord, webhooks, or email' : 'Read-only · admin only'}
+          </div>
         </div>
+        {isAdmin && (
+          <button data-testid="add-channel-btn" onClick={startAdd} className="flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-[#262626] hover:border-[#D4AF37]/40 text-sm text-neutral-300 transition-colors">
+            <Plus size={13} /> Add Channel
+          </button>
+        )}
       </div>
 
-      <div className="p-4">
-        <div className="text-[11px] text-neutral-500 mb-3">
+      <div className="px-6 py-4">
+        <div className="text-sm text-neutral-400 mb-4">
           Configure Slack, Teams, Discord, custom webhooks, or email to receive automatic notifications on incident triggers.
         </div>
 

@@ -6,8 +6,9 @@ export function SeverityBadge({ severity }) {
   return (
     <span
       data-testid={`severity-badge-${severity}`}
-      className="inline-flex items-center px-1.5 py-0.5 text-[10px] font-bold tracking-[0.18em] font-mono"
+      className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[11px] font-semibold tracking-wide font-mono"
       style={{ color: m.text, background: m.bg, border: `1px solid ${m.border}` }}>
+      <span className="w-1.5 h-1.5 rounded-full" style={{ background: m.text }} />
       {m.label}
     </span>
   );
@@ -18,7 +19,7 @@ export function PriorityBadge({ priority }) {
   return (
     <span
       data-testid={`priority-badge-${priority}`}
-      className="inline-flex items-center px-2 py-0.5 text-[11px] font-bold tracking-[0.18em] font-mono"
+      className="inline-flex items-center px-2.5 py-0.5 rounded-md text-xs font-bold tracking-wide font-mono"
       style={{ color: m.text, background: m.bg, border: `1px solid ${m.border}` }}>
       {priority}
     </span>
@@ -27,7 +28,7 @@ export function PriorityBadge({ priority }) {
 
 export function SourceBadge({ source }) {
   return (
-    <span className="inline-flex items-center px-1.5 py-0.5 text-[10px] tracking-[0.15em] uppercase border border-[#2a2a2a] text-neutral-400 font-mono">
+    <span className="inline-flex items-center px-2 py-0.5 rounded-md text-[11px] tracking-wide border border-[#2a2a2a] text-neutral-400 font-mono">
       {source}
     </span>
   );
@@ -35,17 +36,18 @@ export function SourceBadge({ source }) {
 
 export function StatusPill({ status }) {
   const map = {
-    active:    { c: '#FF9F0A', t: 'ACTIVE' },
-    resolved:  { c: '#71717A', t: 'RESOLVED' },
-    noise:     { c: '#0A84FF', t: 'NOISE' },
-    open:      { c: '#FF3B30', t: 'OPEN' },
-    triaging:  { c: '#D4AF37', t: 'TRIAGING' },
+    active:    { c: '#FF9F0A', t: 'Active' },
+    resolved:  { c: '#71717A', t: 'Resolved' },
+    noise:     { c: '#0A84FF', t: 'Noise' },
+    open:      { c: '#FF3B30', t: 'Open' },
+    triaging:  { c: '#D4AF37', t: 'Triaging' },
+    in_progress:{c: '#0A84FF', t: 'In Progress' },
   };
-  const m = map[status] || { c: '#71717A', t: status?.toUpperCase() };
+  const m = map[status] || { c: '#71717A', t: status };
   return (
-    <span className="inline-flex items-center gap-1.5 text-[10px] tracking-[0.18em] uppercase">
-      <span className="w-1.5 h-1.5 rounded-full" style={{background: m.c}} />
-      <span style={{color: m.c}}>{m.t}</span>
+    <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[11px] font-medium" style={{ color: m.c, background: `${m.c}10`, border: `1px solid ${m.c}30` }}>
+      <span className="w-1.5 h-1.5 rounded-full" style={{ background: m.c }} />
+      {m.t}
     </span>
   );
 }

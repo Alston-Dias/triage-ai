@@ -1,27 +1,25 @@
 import React from 'react';
 import { PriorityBadge } from './Badges';
-import { Brain, ShieldAlert as ShieldWarning, Wrench, Terminal, CheckCircle, Filter as Funnel, Sparkles as Sparkle, Clock } from 'lucide-react';
+import { Brain, ShieldAlert, Wrench, Terminal, CheckCircle, Filter, Sparkles, Clock } from 'lucide-react';
 
 const CONF_COLOR = { high: '#30D158', medium: '#D4AF37', low: '#71717A' };
 
 export default function TriagePanel({ result, loading, onResolve }) {
   if (loading) {
     return (
-      <div className="flex flex-col h-full scanlines">
-        <div className="border-b border-[#1f1f1f] px-5 py-4 flex items-center gap-2">
-          <Brain size={18} color="#D4AF37" />
-          <span className="text-[11px] tracking-[0.25em] uppercase text-neutral-300">AI Triage Engine</span>
-          <span className="ml-auto text-[10px] text-[#D4AF37] tracking-widest cursor-blink">ANALYZING</span>
-        </div>
-        <div className="flex-1 flex items-center justify-center">
+      <div className="flex flex-col h-full">
+        <PanelHeader status="analyzing" />
+        <div className="flex-1 flex items-center justify-center px-8">
           <div className="text-center max-w-sm">
-            <div className="text-[10px] tracking-[0.3em] text-[#D4AF37] uppercase mb-2">claude-sonnet-4.5</div>
-            <div className="font-display text-2xl font-black tracking-tighter">CORRELATING SIGNALS</div>
-            <div className="text-xs text-neutral-500 mt-3 leading-relaxed">
-              Deduplicating · Clustering by service · Temporal proximity · Generating root cause hypotheses
+            <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-[#D4AF37]/10 border border-[#D4AF37]/30 text-[11px] text-[#D4AF37] font-medium mb-4">
+              <span className="w-1.5 h-1.5 rounded-full bg-[#D4AF37] live-dot" /> claude-sonnet-4.5
             </div>
-            <div className="mt-6 flex justify-center gap-1">
-              {[0,1,2,3,4].map(i => <span key={i} className="w-1 h-3 bg-[#D4AF37]/50" style={{animation: `pulse-dot 1s ease-in-out ${i*0.12}s infinite`}}/>)}
+            <h3 className="font-display text-2xl font-black tracking-tight">Correlating signals</h3>
+            <p className="text-sm text-neutral-400 mt-2 leading-relaxed">
+              Deduplicating, clustering by service, and generating root cause hypotheses
+            </p>
+            <div className="mt-8 flex justify-center gap-1">
+              {[0,1,2,3,4].map(i => <span key={i} className="w-1 h-3 bg-[#D4AF37]/50 rounded-full" style={{animation: `pulse-dot 1s ease-in-out ${i*0.12}s infinite`}}/>)}
             </div>
           </div>
         </div>
@@ -31,19 +29,17 @@ export default function TriagePanel({ result, loading, onResolve }) {
 
   if (!result) {
     return (
-      <div className="flex flex-col h-full scanlines">
-        <div className="border-b border-[#1f1f1f] px-5 py-4 flex items-center gap-2">
-          <Brain size={18} color="#D4AF37" />
-          <span className="text-[11px] tracking-[0.25em] uppercase text-neutral-300">AI Triage Engine</span>
-          <span className="ml-auto text-[10px] text-neutral-600 tracking-widest">IDLE</span>
-        </div>
-        <div className="flex-1 flex items-center justify-center text-center px-8">
-          <div>
-            <Sparkle size={28} color="#D4AF37" className="mx-auto mb-3" />
-            <div className="font-display text-xl font-black tracking-tighter">AWAITING SIGNAL</div>
-            <div className="text-xs text-neutral-500 mt-2 max-w-xs">
-              Select alerts from the feed and run triage. The engine will correlate them, filter noise, and generate a remediation playbook.
+      <div className="flex flex-col h-full">
+        <PanelHeader status="idle" />
+        <div className="flex-1 flex items-center justify-center text-center px-10">
+          <div className="max-w-xs">
+            <div className="w-14 h-14 mx-auto rounded-full bg-[#D4AF37]/10 border border-[#D4AF37]/20 flex items-center justify-center mb-4">
+              <Sparkles size={24} strokeWidth={1.5} color="#D4AF37" />
             </div>
+            <h3 className="font-display text-xl font-black tracking-tight">Ready to triage</h3>
+            <p className="text-sm text-neutral-400 mt-2 leading-relaxed">
+              Select one or more alerts and run AI triage. The engine will correlate them and produce a remediation playbook.
+            </p>
           </div>
         </div>
       </div>
@@ -51,60 +47,56 @@ export default function TriagePanel({ result, loading, onResolve }) {
   }
 
   return (
-    <div className="flex flex-col h-full scanlines" data-testid="triage-result-panel">
-      <div className="border-b border-[#1f1f1f] px-5 py-4 flex items-center gap-2">
-        <Brain size={18} color="#D4AF37" />
-        <span className="text-[11px] tracking-[0.25em] uppercase text-neutral-300">AI Triage Result</span>
-        <span className="ml-auto text-[10px] text-[#30D158] tracking-widest">COMPLETE</span>
-      </div>
+    <div className="flex flex-col h-full" data-testid="triage-result-panel">
+      <PanelHeader status="complete" />
 
-      <div className="flex-1 overflow-auto p-5 space-y-6">
-        {/* Header */}
-        <div className="border border-[#262626] bg-[#0e0e0e] p-4">
+      <div className="flex-1 overflow-auto p-6 space-y-6">
+        {/* Header card */}
+        <div className="rounded-lg border border-[#D4AF37]/20 bg-gradient-to-br from-[#D4AF37]/[0.04] to-transparent p-5">
           <div className="flex items-start gap-3 flex-wrap">
             <PriorityBadge priority={result.priority} />
-            <div className="text-[10px] tracking-[0.2em] uppercase text-neutral-500">{result.blast_radius}</div>
-            <div className="ml-auto flex items-center gap-1 text-[10px] tracking-widest text-neutral-400 uppercase">
-              <Clock size={11} /> ETA {result.mttr_estimate_minutes}m
+            <span className="text-xs px-2.5 py-1 rounded-md bg-[#161616] text-neutral-300 border border-[#262626]">{result.blast_radius}</span>
+            <div className="ml-auto flex items-center gap-1.5 text-xs text-neutral-400">
+              <Clock size={13} strokeWidth={1.75} /> ETA {result.mttr_estimate_minutes}m
             </div>
           </div>
-          <div className="mt-3 text-sm text-neutral-200 leading-relaxed">{result.summary}</div>
-          <div className="mt-3 flex flex-wrap gap-1.5">
+          <p className="mt-4 text-sm text-neutral-200 leading-relaxed">{result.summary}</p>
+          <div className="mt-4 flex flex-wrap gap-1.5">
             {result.affected_services.map(s => (
-              <span key={s} className="text-[10px] tracking-wider px-2 py-0.5 bg-[#161616] border border-[#2a2a2a] text-neutral-300">{s}</span>
+              <span key={s} className="text-xs px-2 py-0.5 rounded-md bg-[#161616] border border-[#2a2a2a] text-neutral-300 font-mono">{s}</span>
             ))}
           </div>
         </div>
 
         {/* Noise filter */}
         {result.noise_alert_ids?.length > 0 && (
-          <Section title="Noise Filter" icon={Funnel} accent="#0A84FF">
-            <div className="text-xs text-neutral-400 mb-2">{result.noise_alert_ids.length} alert(s) flagged as likely false-positives:</div>
+          <Section title="Noise filter" icon={Filter} count={result.noise_alert_ids.length}>
+            <div className="text-xs text-neutral-400 mb-2">Likely false-positives</div>
             <div className="flex flex-wrap gap-1.5">
               {result.noise_alert_ids.map(id => (
-                <span key={id} className="text-[10px] px-2 py-0.5 bg-[#0A84FF]/10 border border-[#0A84FF]/30 text-[#0A84FF] font-mono">{id}</span>
+                <span key={id} className="text-xs px-2 py-1 rounded-md bg-[#0A84FF]/10 border border-[#0A84FF]/30 text-[#0A84FF] font-mono">{id}</span>
               ))}
             </div>
           </Section>
         )}
 
         {/* Root causes */}
-        <Section title="Root Cause Hypotheses" icon={ShieldWarning} accent="#D4AF37">
-          <div className="space-y-2">
+        <Section title="Root cause hypotheses" icon={ShieldAlert} count={result.root_causes.length}>
+          <div className="space-y-3">
             {result.root_causes.map((rc, idx) => (
-              <div key={idx} data-testid={`root-cause-${rc.rank}`} className="border border-[#262626] bg-[#0d0d0d] p-3">
-                <div className="flex items-center gap-2">
-                  <span className="text-[11px] font-mono font-bold text-[#D4AF37]">#{rc.rank}</span>
-                  <span className="text-sm font-medium text-white flex-1">{rc.hypothesis}</span>
-                  <span className="text-[10px] tracking-[0.18em] uppercase font-mono" style={{color: CONF_COLOR[rc.confidence] || '#71717A'}}>
-                    {rc.confidence} CONF
+              <div key={idx} data-testid={`root-cause-${rc.rank}`} className="rounded-lg border border-[#1f1f1f] bg-[#0d0d0d] p-4">
+                <div className="flex items-center gap-2.5 flex-wrap">
+                  <span className="inline-flex items-center justify-center w-6 h-6 rounded-md bg-[#D4AF37]/10 text-[#D4AF37] text-xs font-bold font-mono">{rc.rank}</span>
+                  <span className="text-sm font-semibold text-white flex-1 min-w-0">{rc.hypothesis}</span>
+                  <span className="text-[11px] px-2 py-0.5 rounded-md font-medium" style={{color: CONF_COLOR[rc.confidence] || '#71717A', background: `${CONF_COLOR[rc.confidence] || '#71717A'}15`, border: `1px solid ${CONF_COLOR[rc.confidence] || '#71717A'}40`}}>
+                    {rc.confidence} confidence
                   </span>
                 </div>
-                <div className="mt-2 text-xs text-neutral-400 leading-relaxed">{rc.reasoning}</div>
+                <p className="mt-2.5 text-xs text-neutral-400 leading-relaxed">{rc.reasoning}</p>
                 {rc.supporting_alert_ids?.length > 0 && (
-                  <div className="mt-2 flex flex-wrap gap-1">
+                  <div className="mt-2.5 flex flex-wrap gap-1">
                     {rc.supporting_alert_ids.map(id => (
-                      <span key={id} className="text-[9px] px-1.5 py-0.5 border border-[#2a2a2a] text-neutral-500 font-mono">{id}</span>
+                      <span key={id} className="text-[10px] px-1.5 py-0.5 rounded border border-[#2a2a2a] text-neutral-500 font-mono">{id}</span>
                     ))}
                   </div>
                 )}
@@ -114,18 +106,20 @@ export default function TriagePanel({ result, loading, onResolve }) {
         </Section>
 
         {/* Remediation */}
-        <Section title="Remediation Playbook" icon={Wrench} accent="#30D158">
-          <div className="space-y-2">
+        <Section title="Remediation playbook" icon={Wrench} count={result.remediation.length}>
+          <div className="space-y-3">
             {result.remediation.map((s, i) => (
-              <div key={i} data-testid={`remediation-step-${i}`} className="border border-[#262626] bg-[#0d0d0d] p-3">
-                <div className="flex items-center gap-2 text-[10px] tracking-[0.2em] uppercase">
-                  <span className="px-1.5 py-0.5 border border-[#2a2a2a]" style={{color: phaseColor(s.phase)}}>{s.phase}</span>
-                  <span className="text-neutral-500">STEP {i+1}</span>
+              <div key={i} data-testid={`remediation-step-${i}`} className="rounded-lg border border-[#1f1f1f] bg-[#0d0d0d] p-4">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="text-[11px] px-2 py-0.5 rounded-md font-medium" style={{color: phaseColor(s.phase), background: `${phaseColor(s.phase)}15`, border: `1px solid ${phaseColor(s.phase)}40`}}>
+                    {s.phase}
+                  </span>
+                  <span className="text-xs text-neutral-500">Step {i+1}</span>
                 </div>
-                <div className="mt-2 text-sm text-neutral-100">{s.action}</div>
+                <div className="mt-2.5 text-sm text-neutral-100 leading-relaxed">{s.action}</div>
                 {s.cli_command && (
-                  <div className="mt-2 flex items-start gap-2 bg-black border border-[#1f1f1f] p-2 font-mono text-[11px] text-[#D4AF37] overflow-x-auto">
-                    <Terminal size={12} className="mt-0.5 shrink-0" />
+                  <div className="mt-3 flex items-start gap-2 rounded-md bg-black/40 border border-[#1f1f1f] px-3 py-2 font-mono text-[12px] text-[#D4AF37] overflow-x-auto">
+                    <Terminal size={13} strokeWidth={1.75} className="mt-0.5 shrink-0 text-neutral-500" />
                     <code className="whitespace-pre">{s.cli_command}</code>
                   </div>
                 )}
@@ -135,25 +129,48 @@ export default function TriagePanel({ result, loading, onResolve }) {
         </Section>
       </div>
 
-      <div className="border-t border-[#1f1f1f] p-4 flex items-center gap-2">
+      <div className="border-t border-[#1f1f1f] p-4">
         <button
           data-testid="resolve-incident-btn"
           onClick={onResolve}
-          className="flex-1 flex items-center justify-center gap-2 bg-white text-black font-bold tracking-[0.18em] uppercase text-[11px] py-2.5 hover:bg-neutral-200 transition-colors">
-          <CheckCircle size={14} /> Resolve Selected Alerts
+          className="w-full flex items-center justify-center gap-2 bg-white text-black font-semibold text-sm py-3 rounded-lg hover:bg-neutral-200 hover-lift transition-colors">
+          <CheckCircle size={16} strokeWidth={2} /> Resolve selected alerts
         </button>
       </div>
     </div>
   );
 }
 
-function Section({ title, icon: Icon, accent, children }) {
+function PanelHeader({ status }) {
+  const map = {
+    idle:     { label: 'Idle', color: '#71717A' },
+    analyzing:{ label: 'Analyzing…', color: '#D4AF37' },
+    complete: { label: 'Complete', color: '#30D158' },
+  };
+  const m = map[status];
+  return (
+    <div className="px-6 py-4 border-b border-[#1f1f1f] flex items-center gap-2.5">
+      <div className="w-8 h-8 rounded-md bg-[#D4AF37]/10 border border-[#D4AF37]/30 flex items-center justify-center">
+        <Brain size={15} strokeWidth={1.75} color="#D4AF37" />
+      </div>
+      <div className="flex-1">
+        <div className="text-sm font-semibold text-white">AI Triage Engine</div>
+        <div className="text-[11px] text-neutral-500">Claude Sonnet 4.5</div>
+      </div>
+      <span className="text-[11px] font-medium flex items-center gap-1.5" style={{ color: m.color }}>
+        <span className="w-1.5 h-1.5 rounded-full" style={{ background: m.color }} />{m.label}
+      </span>
+    </div>
+  );
+}
+
+function Section({ title, icon: Icon, count, children }) {
   return (
     <div>
-      <div className="flex items-center gap-2 mb-2">
-        <Icon size={14} color={accent} />
-        <h3 className="text-[10px] tracking-[0.25em] uppercase text-neutral-300 font-display font-bold">{title}</h3>
-        <div className="flex-1 h-px bg-[#1f1f1f]" />
+      <div className="flex items-center gap-2 mb-3">
+        <Icon size={14} strokeWidth={1.75} className="text-neutral-400" />
+        <h3 className="text-sm font-semibold text-white">{title}</h3>
+        {count !== undefined && <span className="text-xs text-neutral-500">· {count}</span>}
       </div>
       {children}
     </div>
