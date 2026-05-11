@@ -36,6 +36,14 @@ Build the TriageAI application as described in the spec PDF — an AI-Powered In
 ## Test Credentials
 See `/app/memory/test_credentials.md`. 4 users seeded: admin, sre1, sre2, viewer.
 
+### Iteration 4 (2026-05-11) — Notifications + Theme Toggle
+- **Notification Channels (admin-only CRUD)** — Slack, Microsoft Teams, Discord, Generic webhook, Email via Resend
+- **Configurable triggers per channel** — `incident_created` (P1/P2), `sla_breach` (>5d), `incident_resolved`
+- **Dispatcher** — `dispatch_event()` fires all enabled matching channels concurrently via `asyncio.create_task`; per-call status saved to channel (`last_status`) + audit log (`notification_log`)
+- **SLA dedup** — first time an unattended alert is detected it dispatches a breach event; subsequent calls skip it via per-alert marker
+- **RBAC** — `require_admin` dependency gates create/update/delete/test
+- **Theme toggle** — Sun/Moon button in header; light theme overrides via `html[data-theme="light"]` CSS rules; persisted to `localStorage` (`triage_theme`); default dark
+
 ### Iteration 3 (2026-05-10) — Real Webhook Ingestion
 - **Per-source ingest_token** (32-char hex) auto-generated on source creation; backfilled for legacy sources
 - **Public `POST /api/sources/{id}/ingest`** — auth via `?token=` query OR `X-Ingest-Token` header. 401 wrong token, 403 disabled source, 404 missing source.
@@ -46,18 +54,18 @@ See `/app/memory/test_credentials.md`. 4 users seeded: admin, sre1, sre2, viewer
 
 ## Backlog
 ### P1 (next)
-- Refactor server.py (now ~950 lines) into modules (`routes/auth`, `routes/incidents`, `routes/sources`, `services/triage`, `services/webhook_adapters`)
-- RBAC: gate sources/users mutations to admin/on-call only
+- Refactor server.py (now ~1156 lines) into modules (`routes/auth`, `routes/incidents`, `routes/sources`, `routes/notifications`, `services/triage`, `services/webhook_adapters`, `services/notifications`)
+- RBAC: gate sources mutations + /auth/users to admin/on-call only
 - Per-source rate limiting + body-size cap on /ingest endpoint
 - Dedup window on ingested alerts (same source+title+service within N seconds)
-- AI-generated post-incident report when incident is resolved
+- AI-generated post-incident report when incident is resolved (auto-drafted summary + action items shareable as public post-mortem URL)
 
 ### P2
-- Real Slack/Teams notifications for SLA breaches and high-priority incidents (needs webhook URLs)
-- Email digest for unattended alerts
+- Markdown rendering in chat responses + CLI command copy buttons
+- Email digest for unattended alerts (using existing email channel)
 - WebSocket-based real-time alert feed (replace 6s polling)
 - Brute-force protection on /api/auth/login + per-IP rate limiting
-- Markdown rendering in chat responses + CLI command copy buttons
+- Per-incident notification routing (notify only the assignee's preferred channels)
 
 ### P3
 - Multi-tenancy (org_id row-level isolation)

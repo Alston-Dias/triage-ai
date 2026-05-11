@@ -202,7 +202,7 @@ class NotificationChannelIn(BaseModel):
     name: str
     type: ChannelType
     config: Dict[str, Any] = Field(default_factory=dict)
-    triggers: List[TriggerEvent] = Field(default_factory=lambda: ["incident_created", "sla_breach"])
+    triggers: List[TriggerEvent] = Field(default_factory=lambda: ["incident_created", "sla_breach", "incident_resolved"])
     enabled: bool = True
 
 

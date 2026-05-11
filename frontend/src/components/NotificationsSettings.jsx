@@ -29,7 +29,7 @@ export default function NotificationsSettings() {
   const [logs, setLogs] = useState([]);
   const [showAdd, setShowAdd] = useState(false);
   const [editing, setEditing] = useState(null); // channel.id or null
-  const [form, setForm] = useState({ name: '', type: 'slack', config: {}, triggers: ['incident_created', 'sla_breach'], enabled: true });
+  const [form, setForm] = useState({ name: '', type: 'slack', config: {}, triggers: ['incident_created', 'sla_breach', 'incident_resolved'], enabled: true });
   const [testing, setTesting] = useState({});
 
   const isAdmin = user?.role === 'admin';
@@ -42,7 +42,7 @@ export default function NotificationsSettings() {
 
   const startAdd = () => {
     setEditing(null);
-    setForm({ name: '', type: 'slack', config: {}, triggers: ['incident_created', 'sla_breach'], enabled: true });
+    setForm({ name: '', type: 'slack', config: {}, triggers: ['incident_created', 'sla_breach', 'incident_resolved'], enabled: true });
     setShowAdd(true);
   };
   const startEdit = (ch) => {
