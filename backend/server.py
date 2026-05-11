@@ -12,10 +12,13 @@ import logging
 import random
 import re
 import uuid
+import asyncio
 import bcrypt
 import jwt
+import httpx
+import resend
 from datetime import datetime, timezone, timedelta
-from typing import List, Optional, Literal
+from typing import List, Optional, Literal, Dict, Any
 from pydantic import BaseModel, Field, EmailStr
 
 from emergentintegrations.llm.chat import LlmChat, UserMessage
@@ -174,6 +177,35 @@ class UpdateIn(BaseModel):
     text: str
 
 
+# Notification channels
+ChannelType = Literal["slack", "teams", "discord", "webhook", "email"]
+TriggerEvent = Literal["incident_created", "incident_resolved", "sla_breach"]
+
+
+class NotificationChannel(BaseModel):
+    id: str = Field(default_factory=lambda: f"NCH-{uuid.uuid4().hex[:8].upper()}")
+    name: str
+    type: ChannelType
+    config: Dict[str, Any] = Field(default_factory=dict)
+    # config keys per type:
+    #   slack/teams/discord/webhook: {"webhook_url": "..."}
+    #   email: {"api_key": "re_...", "from_email": "...", "to_email": "..."}
+    triggers: List[TriggerEvent] = Field(default_factory=lambda: ["incident_created", "sla_breach"])
+    enabled: bool = True
+    created_by: Optional[str] = None
+    created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    last_used_at: Optional[str] = None
+    last_status: Optional[str] = None  # "ok" | "error: ..."
+
+
+class NotificationChannelIn(BaseModel):
+    name: str
+    type: ChannelType
+    config: Dict[str, Any] = Field(default_factory=dict)
+    triggers: List[TriggerEvent] = Field(default_factory=lambda: ["incident_created", "sla_breach"])
+    enabled: bool = True
+
+
 # -------------------- AUTH --------------------
 def hash_password(pw: str) -> str:
     return bcrypt.hashpw(pw.encode(), bcrypt.gensalt()).decode()
@@ -208,6 +240,12 @@ async def get_current_user(request: Request) -> dict:
     if not user:
         raise HTTPException(401, "User not found")
     return user
+
+
+async def require_admin(current_user: dict = Depends(get_current_user)) -> dict:
+    if current_user.get("role") != "admin":
+        raise HTTPException(403, "Admin only")
+    return current_user
 
 
 SEED_USERS = [
@@ -299,6 +337,28 @@ async def unattended_alerts(current_user: dict = Depends(get_current_user)):
     docs = await db.alerts.find(
         {"status": "active", "timestamp": {"$lt": cutoff}}, {"_id": 0}
     ).sort("timestamp", 1).to_list(200)
+
+    # Fire SLA breach notification, but only once per alert (track notified IDs)
+    if docs:
+        new_ids = []
+        for a in docs:
+            existing = await db.notification_log.find_one({"event": "sla_breach", "alert_id": a["id"]})
+            if not existing:
+                new_ids.append(a["id"])
+        if new_ids:
+            subj = f"[TriageAI] SLA BREACH · {len(new_ids)} alert(s) unattended > 5 days"
+            body = "\n".join([f"- {a['id']} · {a['severity']} · {a['title']} · {a['service']} ({a['region']})"
+                              for a in docs if a["id"] in new_ids])
+            # mark notified
+            now_iso = datetime.now(timezone.utc).isoformat()
+            for aid in new_ids:
+                await db.notification_log.insert_one({
+                    "id": str(uuid.uuid4()), "alert_id": aid, "event": "sla_breach",
+                    "channel_id": None, "channel_name": "(marker)", "channel_type": "marker",
+                    "subject": subj, "status": "pending", "timestamp": now_iso,
+                })
+            asyncio.create_task(dispatch_event("sla_breach", subj, body))
+
     return {"count": len(docs), "alerts": docs, "threshold_days": 5}
 
 
@@ -411,6 +471,16 @@ async def resolve_incident(incident_id: str, current_user: dict = Depends(get_cu
         await db.alerts.update_many(
             {"id": {"$in": inc["alert_ids"]}}, {"$set": {"status": "resolved"}}
         )
+
+    # Notify resolution
+    subj = f"[TriageAI] RESOLVED · {inc['title'][:80]}"
+    body = (
+        f"Incident {inc['id']} resolved by {current_user['name']} ({current_user['email']}).\n"
+        f"Priority: {inc.get('priority')}\n"
+        f"Services: {', '.join(inc.get('affected_services', []))}\n"
+    )
+    asyncio.create_task(dispatch_event("incident_resolved", subj, body))
+
     return {"id": incident_id, "status": "resolved"}
 
 
@@ -520,6 +590,20 @@ async def run_triage(req: TriageRequest, current_user: dict = Depends(get_curren
         await db.alerts.update_many(
             {"id": {"$in": triage.noise_alert_ids}}, {"$set": {"status": "noise"}}
         )
+
+    # Fire notification for P1/P2 incidents
+    if incident.priority in ("P1", "P2"):
+        subj = f"[TriageAI] {incident.priority} · {incident.title[:80]}"
+        body = (
+            f"Priority: {incident.priority}\n"
+            f"Blast radius: {incident.blast_radius}\n"
+            f"Services: {', '.join(incident.affected_services)}\n"
+            f"ETA: {triage.mttr_estimate_minutes}m\n"
+            f"Top hypothesis: {triage.root_causes[0].hypothesis if triage.root_causes else 'n/a'}\n"
+            f"Incident ID: {incident.id}\n"
+        )
+        asyncio.create_task(dispatch_event("incident_created", subj, body))
+
     return triage
 
 
@@ -820,6 +904,131 @@ async def test_source(source_id: str, current_user: dict = Depends(get_current_u
          "$inc": {"ingest_count": len(created)}}
     )
     return {"ingested": len(created), "sample_payload": sample, "alerts": created}
+
+
+# ---------- NOTIFICATIONS ----------
+async def _send_via_channel(channel: dict, subject: str, text: str, html: Optional[str] = None) -> str:
+    """Send a single notification via the given channel. Returns 'ok' or 'error: ...'"""
+    t = channel["type"]
+    cfg = channel.get("config", {}) or {}
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as http:
+            if t == "slack":
+                url = cfg.get("webhook_url")
+                if not url: return "error: webhook_url missing"
+                body = {"text": f"*{subject}*\n{text}"}
+                r = await http.post(url, json=body)
+                return "ok" if r.status_code < 300 else f"error: HTTP {r.status_code}"
+            if t == "teams":
+                url = cfg.get("webhook_url")
+                if not url: return "error: webhook_url missing"
+                body = {"@type": "MessageCard", "@context": "https://schema.org/extensions",
+                        "summary": subject, "title": subject, "text": text}
+                r = await http.post(url, json=body)
+                return "ok" if r.status_code < 300 else f"error: HTTP {r.status_code}"
+            if t == "discord":
+                url = cfg.get("webhook_url")
+                if not url: return "error: webhook_url missing"
+                body = {"content": f"**{subject}**\n{text}"}
+                r = await http.post(url, json=body)
+                return "ok" if r.status_code < 300 else f"error: HTTP {r.status_code}"
+            if t == "webhook":
+                url = cfg.get("webhook_url")
+                if not url: return "error: webhook_url missing"
+                body = {"subject": subject, "text": text, "html": html, "service": "TriageAI"}
+                r = await http.post(url, json=body)
+                return "ok" if r.status_code < 300 else f"error: HTTP {r.status_code}"
+        if t == "email":
+            api_key = cfg.get("api_key")
+            from_email = cfg.get("from_email") or "onboarding@resend.dev"
+            to_email = cfg.get("to_email")
+            if not api_key: return "error: api_key missing"
+            if not to_email: return "error: to_email missing"
+            resend.api_key = api_key
+            params = {"from": from_email, "to": [to_email], "subject": subject,
+                      "html": html or f"<pre style='font-family:monospace'>{text}</pre>"}
+            res = await asyncio.to_thread(resend.Emails.send, params)
+            return "ok" if res and res.get("id") else f"error: {res}"
+    except Exception as e:
+        return f"error: {str(e)[:120]}"
+    return "error: unknown type"
+
+
+async def dispatch_event(event: TriggerEvent, subject: str, text: str, html: Optional[str] = None):
+    """Find all enabled channels listening for this event and fire them in parallel."""
+    channels = await db.notification_channels.find(
+        {"enabled": True, "triggers": event}, {"_id": 0}
+    ).to_list(100)
+    if not channels:
+        return
+    async def _do(ch):
+        status = await _send_via_channel(ch, subject, text, html)
+        await db.notification_channels.update_one(
+            {"id": ch["id"]},
+            {"$set": {"last_used_at": datetime.now(timezone.utc).isoformat(), "last_status": status}}
+        )
+        # log
+        await db.notification_log.insert_one({
+            "id": str(uuid.uuid4()),
+            "channel_id": ch["id"], "channel_name": ch["name"], "channel_type": ch["type"],
+            "event": event, "subject": subject, "status": status,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        })
+    await asyncio.gather(*[_do(c) for c in channels], return_exceptions=True)
+
+
+@api_router.get("/notifications/channels", response_model=List[NotificationChannel])
+async def list_channels(current_user: dict = Depends(get_current_user)):
+    docs = await db.notification_channels.find({}, {"_id": 0}).sort("created_at", -1).to_list(100)
+    return docs
+
+
+@api_router.post("/notifications/channels", response_model=NotificationChannel)
+async def add_channel(body: NotificationChannelIn, current_user: dict = Depends(require_admin)):
+    ch = NotificationChannel(**body.model_dump(), created_by=current_user["email"])
+    await db.notification_channels.insert_one(ch.model_dump())
+    return ch
+
+
+@api_router.patch("/notifications/channels/{channel_id}")
+async def update_channel(channel_id: str, body: NotificationChannelIn,
+                         current_user: dict = Depends(require_admin)):
+    res = await db.notification_channels.update_one(
+        {"id": channel_id}, {"$set": body.model_dump()}
+    )
+    if res.matched_count == 0:
+        raise HTTPException(404, "Not found")
+    return {"id": channel_id, "updated": True}
+
+
+@api_router.delete("/notifications/channels/{channel_id}")
+async def delete_channel(channel_id: str, current_user: dict = Depends(require_admin)):
+    await db.notification_channels.delete_one({"id": channel_id})
+    return {"deleted": channel_id}
+
+
+@api_router.post("/notifications/channels/{channel_id}/test")
+async def test_channel(channel_id: str, current_user: dict = Depends(require_admin)):
+    ch = await db.notification_channels.find_one({"id": channel_id}, {"_id": 0})
+    if not ch:
+        raise HTTPException(404, "Not found")
+    status = await _send_via_channel(
+        ch,
+        subject="[TriageAI] Test notification",
+        text=f"Hello from TriageAI! This is a test notification sent by {current_user['name']} ({current_user['email']}) at {datetime.now(timezone.utc).isoformat()}.",
+        html=f"<h3>TriageAI Test</h3><p>Hello from <b>TriageAI</b>. This is a test notification sent by {current_user['name']}.</p>",
+    )
+    await db.notification_channels.update_one(
+        {"id": channel_id},
+        {"$set": {"last_used_at": datetime.now(timezone.utc).isoformat(), "last_status": status}}
+    )
+    return {"id": channel_id, "status": status}
+
+
+@api_router.get("/notifications/log")
+async def notification_log(limit: int = 50, current_user: dict = Depends(get_current_user)):
+    docs = await db.notification_log.find({}, {"_id": 0}).sort("timestamp", -1).to_list(limit)
+    return docs
 
 
 # ---------- ANALYTICS ----------

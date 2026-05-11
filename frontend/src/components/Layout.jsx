@@ -1,7 +1,8 @@
 import React from 'react';
 import { NavLink, useLocation } from 'react-router-dom';
-import { Activity, Radio, LineChart as ChartLine, Settings as Gear, Zap as Lightning, LogOut } from 'lucide-react';
+import { Activity, Radio, LineChart as ChartLine, Settings as Gear, Zap as Lightning, LogOut, Sun, Moon } from 'lucide-react';
 import { useAuth } from '../lib/auth';
+import { useTheme } from '../lib/theme';
 import UnattendedBanner from './UnattendedBanner';
 
 const NAV = [
@@ -14,6 +15,7 @@ const NAV = [
 export default function Layout({ children }) {
   const loc = useLocation();
   const { user, logout } = useAuth();
+  const { theme, toggle } = useTheme();
   const section = NAV.find(n => loc.pathname === n.to || (n.to !== '/' && loc.pathname.startsWith(n.to)))?.label || 'Live Triage';
 
   return (
@@ -64,6 +66,13 @@ export default function Layout({ children }) {
             <div className="text-[11px] text-neutral-400 tracking-wide">{new Date().toUTCString().slice(5,22)} UTC</div>
           </div>
           <div className="flex items-center gap-2 text-[10px] tracking-widest uppercase text-neutral-500">
+            <button
+              data-testid="theme-toggle"
+              onClick={toggle}
+              title={`Switch to ${theme === 'dark' ? 'light' : 'dark'} theme`}
+              className="p-1.5 border border-[#262626] hover:border-[#D4AF37] hover:text-[#D4AF37] transition-colors">
+              {theme === 'dark' ? <Sun size={12} /> : <Moon size={12} />}
+            </button>
             <span className="px-2 py-1 border border-[#262626]">claude-sonnet-4.5</span>
             {user && <span className="px-2 py-1 border border-[#262626] text-neutral-300">{user.name.split(' ')[0]}</span>}
           </div>

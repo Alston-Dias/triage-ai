@@ -3,6 +3,7 @@ import { fetchSources, addSource, deleteSource, toggleSource, api } from '../lib
 import { CloudUpload as CloudArrowUp, Bell, Brain, Shield, CheckCircle, Plus, Trash2, Power, Copy, Eye, EyeOff, PlayCircle, Webhook } from 'lucide-react';
 import { toast, Toaster } from 'sonner';
 import { relTime } from '../lib/format';
+import NotificationsSettings from '../components/NotificationsSettings';
 
 const TYPES = ['cloudwatch', 'datadog', 'pagerduty', 'grafana', 'prometheus', 'custom'];
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
@@ -155,11 +156,7 @@ export default function Settings() {
         <Row label="Provider" value="Anthropic via Emergent Universal Key" />
       </Section>
 
-      <Section title="Notifications" icon={Bell}>
-        <Row label="Unattended Alert SLA" value="5 days" />
-        <Row label="In-App Toasts" value="Enabled" />
-        <Row label="Slack" value="Not configured" muted />
-      </Section>
+      <NotificationsSettings />
 
       <Section title="Security" icon={Shield}>
         <Row label="Auth" value="JWT Bearer · 24h" />
