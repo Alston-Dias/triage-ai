@@ -2,10 +2,12 @@ import React, { useEffect, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import {
   fetchIncident, listUsers, pickupIncident,
-  addCollaborator, postUpdate, resolveIncident
+  addCollaborator, postUpdate, resolveIncident,
+  fetchIncidentDeployments,
 } from '../lib/api';
 import { PriorityBadge, StatusPill, SeverityBadge, SourceBadge } from '../components/Badges';
 import IncidentChat from '../components/IncidentChat';
+import DeploymentCard from '../components/DeploymentCard';
 import { useAuth } from '../lib/auth';
 import { ArrowLeft, UserPlus, CheckCircle, Hand, Send } from 'lucide-react';
 import { relTime } from '../lib/format';
@@ -16,11 +18,16 @@ export default function IncidentDetail() {
   const { user } = useAuth();
   const [data, setData] = useState(null);
   const [users, setUsers] = useState([]);
+  const [deployments, setDeployments] = useState([]);
   const [showAddCollab, setShowAddCollab] = useState(false);
   const [updateText, setUpdateText] = useState('');
 
   const load = () => fetchIncident(id).then(setData);
-  useEffect(() => { load(); listUsers().then(setUsers); }, [id]);
+  useEffect(() => {
+    load();
+    listUsers().then(setUsers);
+    fetchIncidentDeployments(id).then(r => setDeployments(r.deployments || [])).catch(() => {});
+  }, [id]);
 
   if (!data) return <div className="px-8 py-12 text-sm text-neutral-500">Loading incident…</div>;
 
@@ -113,6 +120,26 @@ export default function IncidentDetail() {
       <div className="mt-4 grid grid-cols-1 lg:grid-cols-3 gap-4">
         {/* Left: triage + alerts + updates */}
         <div className="lg:col-span-2 space-y-4">
+          {deployments.length > 0 && (
+            <section className="rounded-xl border border-[#1f1f1f] bg-[#0d0d0d] p-6" data-testid="incident-deployment-section">
+              <h3 className="text-base font-display font-bold text-white tracking-tight mb-4 flex items-center gap-2">
+                Deployment Correlation
+                <span className="text-xs font-normal text-neutral-500">· {deployments.length} match{deployments.length === 1 ? '' : 'es'}</span>
+              </h3>
+              <DeploymentCard deployment={deployments[0]} />
+              {deployments.length > 1 && (
+                <details className="mt-2">
+                  <summary className="text-xs text-neutral-500 cursor-pointer hover:text-neutral-300">
+                    Show {deployments.length - 1} additional correlated deployment{deployments.length - 1 === 1 ? '' : 's'}
+                  </summary>
+                  <div className="mt-3 space-y-2">
+                    {deployments.slice(1).map(d => <DeploymentCard key={d.id} deployment={d} />)}
+                  </div>
+                </details>
+              )}
+            </section>
+          )}
+
           {triage && (
             <Section title="AI Triage Summary">
               <p className="text-sm text-neutral-300 leading-relaxed">{triage.summary}</p>

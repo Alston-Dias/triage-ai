@@ -17,9 +17,12 @@ import bcrypt
 import jwt
 import httpx
 import resend
+import base64
+import hashlib
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional, Literal, Dict, Any
 from pydantic import BaseModel, Field, EmailStr
+from cryptography.fernet import Fernet, InvalidToken
 
 from emergentintegrations.llm.chat import LlmChat, UserMessage
 
@@ -521,13 +524,23 @@ def _extract_json(text: str) -> dict:
     return json.loads(text)
 
 
-@api_router.post("/triage", response_model=TriageResult)
+@api_router.post("/triage")
 async def run_triage(req: TriageRequest, current_user: dict = Depends(get_current_user)):
     if not req.alert_ids:
         raise HTTPException(400, "alert_ids required")
     alerts = await db.alerts.find({"id": {"$in": req.alert_ids}}, {"_id": 0}).to_list(200)
     if not alerts:
         raise HTTPException(404, "No alerts found")
+
+    # F-01: correlate deployments BEFORE LLM call so we can enrich the prompt
+    try:
+        correlated_deployments = await DeploymentCorrelator.find_for_alerts(
+            alerts, window_minutes=30, confidence_min=0.3
+        )
+    except Exception as e:
+        logger.exception("Deployment correlation failed: %s", e)
+        correlated_deployments = []
+    deployment_prompt_block = _build_deployment_prompt_block(correlated_deployments)
 
     user_payload = {
         "alerts": [
@@ -539,13 +552,16 @@ async def run_triage(req: TriageRequest, current_user: dict = Depends(get_curren
             } for a in alerts
         ]
     }
+    user_text = f"Analyze these alerts and produce the triage JSON:\n{json.dumps(user_payload, indent=2)}"
+    if deployment_prompt_block:
+        user_text += "\n" + deployment_prompt_block
     try:
         chat = LlmChat(
             api_key=EMERGENT_LLM_KEY,
             session_id=f"triage-{uuid.uuid4().hex[:8]}",
             system_message=TRIAGE_SYSTEM,
         ).with_model("anthropic", "claude-sonnet-4-5-20250929")
-        msg = UserMessage(text=f"Analyze these alerts and produce the triage JSON:\n{json.dumps(user_payload, indent=2)}")
+        msg = UserMessage(text=user_text)
         raw = await chat.send_message(msg)
         parsed = _extract_json(raw)
     except Exception as e:
@@ -604,7 +620,10 @@ async def run_triage(req: TriageRequest, current_user: dict = Depends(get_curren
         )
         asyncio.create_task(dispatch_event("incident_created", subj, body))
 
-    return triage
+    # F-01: attach correlated deployments to triage response
+    response = triage.model_dump()
+    response["deployments"] = correlated_deployments
+    return response
 
 
 # ---------- INCIDENT CHAT ----------
@@ -1138,6 +1157,641 @@ async def simulate_alert(current_user: dict = Depends(get_current_user)):
     )
     await db.alerts.insert_one(a.model_dump())
     return a
+
+
+# ====================================================================================================
+# F-01 DEPLOYMENT CHANGE CORRELATION
+# ====================================================================================================
+
+# -------------------- Token encryption (Fernet) --------------------
+def _fernet() -> Fernet:
+    key = hashlib.sha256(JWT_SECRET.encode()).digest()
+    return Fernet(base64.urlsafe_b64encode(key))
+
+
+def encrypt_token(plain: str) -> str:
+    if not plain:
+        return ""
+    return _fernet().encrypt(plain.encode()).decode()
+
+
+def decrypt_token(enc: str) -> str:
+    if not enc:
+        return ""
+    try:
+        return _fernet().decrypt(enc.encode()).decode()
+    except (InvalidToken, Exception):
+        return ""
+
+
+# -------------------- CI/CD Models --------------------
+CICDType = Literal["github", "gitlab", "circle", "argocd", "mock"]
+
+
+class CICDTool(BaseModel):
+    id: str = Field(default_factory=lambda: f"CCT-{uuid.uuid4().hex[:8].upper()}")
+    name: str
+    type: CICDType
+    api_token_enc: str = ""           # encrypted at rest
+    base_url: str = ""                # e.g. "https://api.github.com/repos/org/repo"
+    watch_services: List[str] = []    # e.g. ["payments-api", "auth-service"]
+    active: bool = True
+    last_sync_at: Optional[str] = None
+    last_sync_status: Optional[str] = None  # "ok" | "error: ..."
+    sync_count: int = 0
+    created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+
+
+class CICDToolIn(BaseModel):
+    name: str
+    type: CICDType
+    api_token: Optional[str] = ""       # plain — will be encrypted before storage
+    base_url: Optional[str] = ""
+    watch_services: List[str] = []
+    active: bool = True
+
+
+class Deployer(BaseModel):
+    name: str = ""
+    handle: str = ""
+    avatar_url: Optional[str] = None
+
+
+class DeploymentEvent(BaseModel):
+    id: str = Field(default_factory=lambda: f"DEP-{uuid.uuid4().hex[:8].upper()}")
+    cicd_tool_id: str
+    service: str
+    version: str = ""
+    deployed_by_name: str = ""
+    deployed_by_handle: str = ""
+    deployed_by_avatar: Optional[str] = None
+    deployed_at: str
+    changed_files: List[str] = []
+    diff_summary: str = ""
+    pr_title: str = ""
+    pr_url: str = ""
+    rollback_command: str = ""
+    ci_run_url: str = ""
+    external_id: Optional[str] = None  # to dedupe upstream
+    created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+
+
+# -------------------- CI/CD Adapters --------------------
+class BaseCICDAdapter:
+    """Adapter interface. Subclasses fetch deployment events from a specific CI/CD provider."""
+    type_name: str = "base"
+
+    def __init__(self, tool: dict):
+        self.tool = tool
+        self.token = decrypt_token(tool.get("api_token_enc", ""))
+        self.base_url = (tool.get("base_url") or "").rstrip("/")
+        self.watch_services = tool.get("watch_services", []) or []
+
+    async def fetch_recent_deployments(self, since: datetime, force: bool = False) -> List[Dict[str, Any]]:
+        """Return list of normalized deployment dicts (matching DeploymentEvent fields, no id/created_at).
+        If `force=True`, always return at least one event (used for /test endpoint)."""
+        raise NotImplementedError
+
+
+class GitHubActionsAdapter(BaseCICDAdapter):
+    """Fetch successful workflow runs (= deployments) from GitHub Actions.
+
+    base_url should be: https://api.github.com/repos/{owner}/{repo}
+    api_token is a PAT with `repo` + `actions:read` scopes.
+    """
+    type_name = "github"
+
+    async def fetch_recent_deployments(self, since: datetime, force: bool = False) -> List[Dict[str, Any]]:
+        if not self.token or not self.base_url:
+            raise RuntimeError("api_token and base_url are required for GitHub Actions")
+        if not self.base_url.startswith("http"):
+            raise RuntimeError("base_url must be a full URL")
+        # GitHub Actions API
+        headers = {
+            "Authorization": f"Bearer {self.token}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        }
+        since_str = since.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        async with httpx.AsyncClient(timeout=20.0) as http:
+            runs_url = f"{self.base_url}/actions/runs"
+            r = await http.get(
+                runs_url,
+                headers=headers,
+                params={
+                    "status": "success",
+                    "created": f">={since_str}",
+                    "per_page": 30,
+                },
+            )
+            r.raise_for_status()
+            runs = r.json().get("workflow_runs", [])
+            out: List[Dict[str, Any]] = []
+            for run in runs:
+                head_sha = run.get("head_sha", "")
+                run_id = str(run.get("id", ""))
+                deployed_at_iso = run.get("updated_at") or run.get("created_at")
+                actor = run.get("actor") or {}
+                ci_run_url = run.get("html_url", "")
+                # Map service: first watch_service or derive from workflow name
+                service = (self.watch_services[0] if self.watch_services
+                           else (run.get("name") or "unknown"))
+                # Fetch diff via /compare for changed files (best-effort)
+                changed_files: List[str] = []
+                diff_summary = ""
+                pr_title = run.get("display_title") or run.get("name", "")
+                pr_url = ""
+                # Pull request associated
+                prs = run.get("pull_requests", []) or []
+                if prs:
+                    pr_url = prs[0].get("url", "")
+                    # html PR url
+                    if pr_url.startswith("https://api.github.com/repos/"):
+                        pr_url = (pr_url.replace("https://api.github.com/repos/",
+                                                 "https://github.com/")
+                                        .replace("/pulls/", "/pull/"))
+                try:
+                    if head_sha:
+                        commit_resp = await http.get(
+                            f"{self.base_url}/commits/{head_sha}", headers=headers
+                        )
+                        if commit_resp.status_code == 200:
+                            commit = commit_resp.json()
+                            files = commit.get("files", []) or []
+                            changed_files = [f.get("filename", "") for f in files][:20]
+                            patches = [f.get("patch", "") for f in files[:3] if f.get("patch")]
+                            diff_summary = "\n".join(patches)[:1500]
+                except Exception:
+                    pass
+                out.append({
+                    "service": service,
+                    "version": (head_sha[:7] if head_sha else (run.get("run_number") and f"run#{run['run_number']}" or "")),
+                    "deployed_by_name": actor.get("login", ""),
+                    "deployed_by_handle": actor.get("login", ""),
+                    "deployed_by_avatar": actor.get("avatar_url"),
+                    "deployed_at": deployed_at_iso,
+                    "changed_files": changed_files,
+                    "diff_summary": diff_summary,
+                    "pr_title": pr_title,
+                    "pr_url": pr_url,
+                    "rollback_command": f"kubectl rollout undo deploy/{service}",
+                    "ci_run_url": ci_run_url,
+                    "external_id": f"gh:{run_id}",
+                })
+            return out
+
+
+class MockAdapter(BaseCICDAdapter):
+    """Synthetic adapter for demo/testing. Each sync MAY create a deployment in the last few minutes
+    for one of the watched services. Idempotent via external_id."""
+    type_name = "mock"
+
+    MOCK_PRS = [
+        ("Perf: tune DB connection pool limits", [
+            "src/OrderController.java",
+            "src/PaymentService.java",
+            "db/migrations/V42_add_indexes.sql",
+            "config/application.yml",
+        ], "-connection_limit=100\n+connection_limit=20"),
+        ("Feat: switch payments to async queue", [
+            "services/payments/queue.py",
+            "services/payments/handler.py",
+            "config/queue.yml",
+        ], "+await queue.publish(event)\n-sync_publish(event)"),
+        ("Fix: retry policy on auth token refresh", [
+            "auth/token_refresh.py",
+            "auth/retry.py",
+        ], "-max_retries=3\n+max_retries=1"),
+        ("Chore: bump cache TTL to reduce origin load", [
+            "edge/cache_config.ts",
+            "edge/headers.ts",
+        ], "-ttl: 60\n+ttl: 3600"),
+        ("Refactor: extract checkout validation", [
+            "checkout/validate.go",
+            "checkout/order.go",
+        ], "+func validateOrder(...) {...}"),
+    ]
+    MOCK_DEPLOYERS = [
+        ("Jane Smith",   "jane",   "https://avatars.githubusercontent.com/u/1?v=4"),
+        ("Alex Chen",    "alexc",  "https://avatars.githubusercontent.com/u/2?v=4"),
+        ("Maya Patel",   "mayap",  "https://avatars.githubusercontent.com/u/3?v=4"),
+        ("Sam Rivera",   "samr",   "https://avatars.githubusercontent.com/u/4?v=4"),
+    ]
+
+    async def fetch_recent_deployments(self, since: datetime, force: bool = False) -> List[Dict[str, Any]]:
+        # Generate 0-1 fresh deployments per sync, deployed within (since, now)
+        services = self.watch_services or ["payments-api", "auth-service", "checkout-svc", "edge-cdn"]
+        # Probability gate: 25% chance per sync to "deploy" (always if force=True)
+        if not force and random.random() > 0.25:
+            return []
+        svc = random.choice(services)
+        deployer = random.choice(self.MOCK_DEPLOYERS)
+        pr_title, files, diff = random.choice(self.MOCK_PRS)
+        now = datetime.now(timezone.utc)
+        # Pick a time between `since` and `now`
+        span_s = max(60, int((now - since).total_seconds()))
+        deployed_at = now - timedelta(seconds=random.randint(0, span_s - 30))
+        version = f"v{random.randint(1, 5)}.{random.randint(0, 12)}.{random.randint(0, 30)}"
+        run_id = uuid.uuid4().hex[:10]
+        return [{
+            "service": svc,
+            "version": version,
+            "deployed_by_name": deployer[0],
+            "deployed_by_handle": deployer[1],
+            "deployed_by_avatar": deployer[2],
+            "deployed_at": deployed_at.isoformat(),
+            "changed_files": files,
+            "diff_summary": diff,
+            "pr_title": pr_title,
+            "pr_url": f"https://github.com/triageai-demo/{svc}/pull/{random.randint(100, 999)}",
+            "rollback_command": f"kubectl rollout undo deploy/{svc}",
+            "ci_run_url": f"https://github.com/triageai-demo/{svc}/actions/runs/{run_id}",
+            "external_id": f"mock:{run_id}",
+        }]
+
+
+class _StubAdapter(BaseCICDAdapter):
+    async def fetch_recent_deployments(self, since: datetime, force: bool = False) -> List[Dict[str, Any]]:
+        raise NotImplementedError(f"{self.type_name} adapter is not yet implemented")
+
+
+class GitLabAdapter(_StubAdapter):
+    type_name = "gitlab"
+
+
+class CircleCIAdapter(_StubAdapter):
+    type_name = "circle"
+
+
+class ArgoCDAdapter(_StubAdapter):
+    type_name = "argocd"
+
+
+def _adapter_for(tool: dict) -> BaseCICDAdapter:
+    t = tool.get("type")
+    if t == "github": return GitHubActionsAdapter(tool)
+    if t == "gitlab": return GitLabAdapter(tool)
+    if t == "circle": return CircleCIAdapter(tool)
+    if t == "argocd": return ArgoCDAdapter(tool)
+    if t == "mock":   return MockAdapter(tool)
+    raise RuntimeError(f"Unknown CI/CD type: {t}")
+
+
+# -------------------- CI/CD Service (sync) --------------------
+class CICDToolService:
+    @staticmethod
+    async def sync_tool(tool: dict, lookback_minutes: int = 120, force: bool = False) -> Dict[str, Any]:
+        """Pull recent deployments from the adapter and upsert into deployment_events."""
+        adapter = _adapter_for(tool)
+        since = datetime.now(timezone.utc) - timedelta(minutes=lookback_minutes)
+        try:
+            events = await adapter.fetch_recent_deployments(since, force=force)
+        except Exception as e:
+            logger.exception("CICD sync failed for %s (%s): %s", tool.get("name"), tool.get("type"), e)
+            await db.cicd_tools.update_one(
+                {"id": tool["id"]},
+                {"$set": {"last_sync_at": datetime.now(timezone.utc).isoformat(),
+                          "last_sync_status": f"error: {str(e)[:140]}"}},
+            )
+            return {"ok": False, "error": str(e), "ingested": 0}
+
+        ingested = 0
+        for ev in events:
+            ext_id = ev.get("external_id")
+            if ext_id:
+                existing = await db.deployment_events.find_one({"external_id": ext_id, "cicd_tool_id": tool["id"]})
+                if existing:
+                    continue
+            doc = DeploymentEvent(cicd_tool_id=tool["id"], **ev).model_dump()
+            await db.deployment_events.insert_one(doc)
+            ingested += 1
+
+        await db.cicd_tools.update_one(
+            {"id": tool["id"]},
+            {"$set": {"last_sync_at": datetime.now(timezone.utc).isoformat(),
+                      "last_sync_status": "ok"},
+             "$inc": {"sync_count": 1}},
+        )
+        return {"ok": True, "ingested": ingested}
+
+    @staticmethod
+    async def sync_all() -> Dict[str, Any]:
+        tools = await db.cicd_tools.find({"active": True}, {"_id": 0}).to_list(50)
+        results = []
+        for t in tools:
+            r = await CICDToolService.sync_tool(t)
+            results.append({"tool_id": t["id"], "name": t["name"], **r})
+        return {"synced": len(results), "results": results}
+
+
+# -------------------- DeploymentCorrelator --------------------
+class DeploymentCorrelator:
+    RISKY_KEYWORDS = [
+        "migration", "config", "connection", "pool", "limit", "timeout",
+        "database", "db", "auth", "index", "cache", "queue", "retry",
+        "memory", "throttle", "ratelimit", "deploy", "k8s", "kubernetes",
+    ]
+
+    @staticmethod
+    def _parse_dt(s: str) -> Optional[datetime]:
+        if not s: return None
+        try:
+            return datetime.fromisoformat(s.replace("Z", "+00:00"))
+        except Exception:
+            return None
+
+    @classmethod
+    def score(cls, deployment: dict, incident_services: List[str], first_alert_at: datetime) -> float:
+        deployed_at = cls._parse_dt(deployment.get("deployed_at", ""))
+        if not deployed_at:
+            return 0.0
+
+        # 1) Time delta score (50% weight)
+        delta_min = (first_alert_at - deployed_at).total_seconds() / 60.0
+        if delta_min < 0:
+            time_score = 0.0
+        elif delta_min <= 5:
+            time_score = 1.0
+        elif delta_min <= 15:
+            time_score = 0.85
+        elif delta_min <= 30:
+            time_score = 0.6
+        elif delta_min <= 60:
+            time_score = 0.3
+        elif delta_min <= 120:
+            time_score = 0.1
+        else:
+            time_score = 0.0
+
+        # 2) Service match score (35% weight)
+        inc_services = {s.lower().strip() for s in incident_services if s}
+        dep_service = (deployment.get("service") or "").lower().strip()
+        if not dep_service:
+            service_score = 0.0
+        elif dep_service in inc_services:
+            service_score = 1.0
+        elif any(dep_service in s or s in dep_service for s in inc_services):
+            service_score = 0.6
+        else:
+            service_score = 0.1
+
+        # 3) Changed-files relevance score (15% weight)
+        changed_text = " ".join(deployment.get("changed_files", []) or []).lower()
+        kw_hits = sum(1 for kw in cls.RISKY_KEYWORDS if kw in changed_text)
+        if any(s in changed_text for s in inc_services if s):
+            kw_hits += 2
+        file_score = min(1.0, kw_hits / 4.0)
+
+        total = (time_score * 0.5) + (service_score * 0.35) + (file_score * 0.15)
+        return round(total, 3)
+
+    @staticmethod
+    def label(score: float) -> str:
+        if score >= 0.7: return "high"
+        if score >= 0.4: return "medium"
+        return "low"
+
+    @classmethod
+    async def find_for_alerts(cls, alerts: List[dict], window_minutes: int = 30,
+                              confidence_min: float = 0.3) -> List[dict]:
+        """Find deployments correlated with the given alerts (used during triage prompt enrichment)."""
+        if not alerts:
+            return []
+        first_alert_at = None
+        for a in alerts:
+            dt = cls._parse_dt(a.get("timestamp", ""))
+            if dt and (first_alert_at is None or dt < first_alert_at):
+                first_alert_at = dt
+        if not first_alert_at:
+            return []
+        return await cls._find(first_alert_at, [a.get("service", "") for a in alerts],
+                               window_minutes, confidence_min)
+
+    @classmethod
+    async def find_for_incident(cls, incident_id: str, window_minutes: int = 30,
+                                confidence_min: float = 0.3) -> List[dict]:
+        inc = await db.incidents.find_one({"id": incident_id}, {"_id": 0})
+        if not inc:
+            raise HTTPException(404, "Incident not found")
+        alerts = await db.alerts.find({"id": {"$in": inc.get("alert_ids", [])}}, {"_id": 0}).to_list(200)
+        first_alert_at = None
+        for a in alerts:
+            dt = cls._parse_dt(a.get("timestamp", ""))
+            if dt and (first_alert_at is None or dt < first_alert_at):
+                first_alert_at = dt
+        if not first_alert_at:
+            # fall back to incident creation time
+            first_alert_at = cls._parse_dt(inc.get("created_at", "")) or datetime.now(timezone.utc)
+        return await cls._find(first_alert_at,
+                               inc.get("affected_services") or [a.get("service", "") for a in alerts],
+                               window_minutes, confidence_min)
+
+    @classmethod
+    async def _find(cls, first_alert_at: datetime, incident_services: List[str],
+                    window_minutes: int, confidence_min: float) -> List[dict]:
+        # query: deployed_at in [wide_start, first_alert_at]; we widen to 2h then filter in memory by score (since
+        # the time portion of confidence already drops to 0 beyond 2h).
+        wide_start = (first_alert_at - timedelta(minutes=max(window_minutes, 120))).isoformat()
+        wide_end = first_alert_at.isoformat()
+        docs = await db.deployment_events.find(
+            {"deployed_at": {"$gte": wide_start, "$lte": wide_end}},
+            {"_id": 0},
+        ).sort("deployed_at", -1).to_list(100)
+        scored: List[dict] = []
+        for d in docs:
+            sc = cls.score(d, incident_services, first_alert_at)
+            if sc < confidence_min:
+                continue
+            deployed_at = cls._parse_dt(d.get("deployed_at", "")) or first_alert_at
+            minutes_before = max(0, int((first_alert_at - deployed_at).total_seconds() / 60))
+            scored.append({
+                "id": d["id"],
+                "service": d.get("service", ""),
+                "version": d.get("version", ""),
+                "deployed_by": {
+                    "name": d.get("deployed_by_name", ""),
+                    "handle": d.get("deployed_by_handle", ""),
+                    "avatar_url": d.get("deployed_by_avatar"),
+                },
+                "deployed_at": d.get("deployed_at"),
+                "minutes_before_incident": minutes_before,
+                "confidence": sc,
+                "confidence_label": cls.label(sc),
+                "changed_files": d.get("changed_files", []) or [],
+                "diff_summary": d.get("diff_summary", ""),
+                "pr_title": d.get("pr_title", ""),
+                "pr_url": d.get("pr_url", ""),
+                "ci_run_url": d.get("ci_run_url", ""),
+                "rollback_command": d.get("rollback_command", ""),
+                "cicd_tool_id": d.get("cicd_tool_id"),
+            })
+        scored.sort(key=lambda x: x["confidence"], reverse=True)
+        return scored
+
+
+def _build_deployment_prompt_block(deployments: List[dict]) -> str:
+    """Render the deployment context for the Claude triage prompt (only confidence >= 0.3)."""
+    if not deployments:
+        return ""
+    relevant = [d for d in deployments if d.get("confidence", 0) >= 0.3]
+    if not relevant:
+        return ""
+    lines = ["", "RECENT DEPLOYMENTS (before first alert):"]
+    for d in relevant[:5]:
+        deployer = (d["deployed_by"].get("name")
+                    or d["deployed_by"].get("handle") or "unknown")
+        lines.append(
+            f"- {d['service']} {d.get('version','')} by @{d['deployed_by'].get('handle') or deployer}, "
+            f"{d['minutes_before_incident']} min before incident "
+            f"(confidence: {d['confidence_label']} {d['confidence']})"
+        )
+        if d.get("changed_files"):
+            lines.append("  Changed files: " + ", ".join(d["changed_files"][:5]))
+        if d.get("diff_summary"):
+            excerpt = d["diff_summary"].replace("\n", " | ")[:200]
+            lines.append(f"  Diff excerpt: {excerpt}")
+        if d.get("pr_title"):
+            lines.append(f"  PR: '{d['pr_title']}'")
+    lines.append("")
+    lines.append("Consider whether any recent deployment is the root cause.")
+    lines.append("If confident, rank it #1 hypothesis and include rollback as step 1.")
+    return "\n".join(lines)
+
+
+# -------------------- CI/CD Tool routes --------------------
+def _tool_view(t: dict) -> dict:
+    """Strip encrypted token from API view, expose has_token flag."""
+    out = {k: v for k, v in t.items() if k != "_id" and k != "api_token_enc"}
+    out["has_token"] = bool(t.get("api_token_enc"))
+    return out
+
+
+@api_router.get("/cicd/tools")
+async def list_cicd_tools(current_user: dict = Depends(get_current_user)):
+    docs = await db.cicd_tools.find({}, {"_id": 0}).sort("created_at", -1).to_list(50)
+    return [_tool_view(d) for d in docs]
+
+
+@api_router.post("/cicd/tools")
+async def add_cicd_tool(body: CICDToolIn, current_user: dict = Depends(require_admin)):
+    tool = CICDTool(
+        name=body.name, type=body.type,
+        api_token_enc=encrypt_token(body.api_token or ""),
+        base_url=body.base_url or "",
+        watch_services=body.watch_services or [],
+        active=body.active,
+    )
+    await db.cicd_tools.insert_one(tool.model_dump())
+    return _tool_view(tool.model_dump())
+
+
+@api_router.patch("/cicd/tools/{tool_id}")
+async def update_cicd_tool(tool_id: str, body: CICDToolIn,
+                           current_user: dict = Depends(require_admin)):
+    existing = await db.cicd_tools.find_one({"id": tool_id})
+    if not existing:
+        raise HTTPException(404, "Tool not found")
+    update: Dict[str, Any] = {
+        "name": body.name, "type": body.type,
+        "base_url": body.base_url or "",
+        "watch_services": body.watch_services or [],
+        "active": body.active,
+    }
+    # Only replace token if a new one was provided (non-empty)
+    if body.api_token:
+        update["api_token_enc"] = encrypt_token(body.api_token)
+    await db.cicd_tools.update_one({"id": tool_id}, {"$set": update})
+    doc = await db.cicd_tools.find_one({"id": tool_id}, {"_id": 0})
+    return _tool_view(doc)
+
+
+@api_router.delete("/cicd/tools/{tool_id}")
+async def delete_cicd_tool(tool_id: str, current_user: dict = Depends(require_admin)):
+    await db.cicd_tools.delete_one({"id": tool_id})
+    return {"deleted": tool_id}
+
+
+@api_router.post("/cicd/tools/{tool_id}/test")
+async def test_cicd_tool(tool_id: str, current_user: dict = Depends(require_admin)):
+    """Run a single sync immediately and return ingested count + any error. Forces a deployment for mock tools."""
+    tool = await db.cicd_tools.find_one({"id": tool_id}, {"_id": 0})
+    if not tool:
+        raise HTTPException(404, "Not found")
+    res = await CICDToolService.sync_tool(tool, lookback_minutes=30, force=True)
+    return res
+
+
+@api_router.post("/cicd/sync-all")
+async def sync_all_cicd(current_user: dict = Depends(require_admin)):
+    return await CICDToolService.sync_all()
+
+
+@api_router.get("/cicd/deployments")
+async def list_deployments(limit: int = 50, current_user: dict = Depends(get_current_user)):
+    docs = await db.deployment_events.find({}, {"_id": 0}).sort("deployed_at", -1).to_list(limit)
+    return docs
+
+
+@api_router.get("/incidents/{incident_id}/deployments")
+async def get_incident_deployments(
+    incident_id: str,
+    window_minutes: int = 30,
+    confidence_min: float = 0.3,
+    current_user: dict = Depends(get_current_user),
+):
+    # Clamp window
+    window_minutes = max(1, min(window_minutes, 120))
+    confidence_min = max(0.0, min(confidence_min, 1.0))
+    deployments = await DeploymentCorrelator.find_for_incident(
+        incident_id, window_minutes=window_minutes, confidence_min=confidence_min
+    )
+    return {"deployments": deployments, "window_minutes": window_minutes,
+            "confidence_min": confidence_min}
+
+
+# -------------------- Background sync loop --------------------
+_sync_task_started = False
+
+
+async def _periodic_cicd_sync():
+    """Background task: run CICDToolService.sync_all() every 60s."""
+    await asyncio.sleep(10)  # let app warm up
+    while True:
+        try:
+            await CICDToolService.sync_all()
+        except Exception as e:
+            logger.exception("Periodic CICD sync failed: %s", e)
+        await asyncio.sleep(60)
+
+
+@app.on_event("startup")
+async def seed_cicd_demo_tool():
+    """Seed one mock CI/CD tool on first startup so the demo works out-of-the-box."""
+    count = await db.cicd_tools.count_documents({})
+    if count == 0:
+        mock = CICDTool(
+            name="Demo CI/CD (mock)",
+            type="mock",
+            api_token_enc="",
+            base_url="https://example.com/mock-ci",
+            watch_services=["payments-api", "payments-db", "auth-service",
+                            "checkout-svc", "edge-cdn"],
+            active=True,
+        )
+        await db.cicd_tools.insert_one(mock.model_dump())
+        logger.info("Seeded demo mock CICD tool: %s", mock.id)
+
+    # Start background sync loop exactly once
+    global _sync_task_started
+    if not _sync_task_started:
+        _sync_task_started = True
+        asyncio.create_task(_periodic_cicd_sync())
+        logger.info("CICD periodic sync task started (every 60s)")
+
+
+# ====================================================================================================
+# END F-01
+# ====================================================================================================
 
 
 app.include_router(api_router)

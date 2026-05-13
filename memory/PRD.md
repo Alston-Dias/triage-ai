@@ -44,7 +44,17 @@ See `/app/memory/test_credentials.md`. 4 users seeded: admin, sre1, sre2, viewer
 - **RBAC** — `require_admin` dependency gates create/update/delete/test
 - **Theme toggle** — Sun/Moon button in header; light theme overrides via `html[data-theme="light"]` CSS rules; persisted to `localStorage` (`triage_theme`); default dark
 
-### Iteration 3 (2026-05-10) — Real Webhook Ingestion
+### Iteration 5 (2026-05-12) — F-01 Deployment Change Correlation
+- **`cicd_tools` & `deployment_events` collections** — Fernet-encrypted API tokens (JWT_SECRET-derived key), service watchlists, sync counters.
+- **Adapter pattern** — `BaseCICDAdapter` interface with real `GitHubActionsAdapter` (workflow_runs + commit/files via GitHub REST), `MockAdapter` (synthetic deployments for demo), and stubs for GitLab/CircleCI/ArgoCD.
+- **`DeploymentCorrelator`** — confidence = 0.5·time + 0.35·service_match + 0.15·file_relevance. Labels: high ≥ 0.7, medium ≥ 0.4, else low.
+- **Endpoints** — `GET/POST/PATCH/DELETE /api/cicd/tools` (admin CRUD), `POST /api/cicd/tools/{id}/test`, `POST /api/cicd/sync-all`, `GET /api/cicd/deployments`, `GET /api/incidents/{id}/deployments?window_minutes&confidence_min`.
+- **Background sync** — asyncio loop calls `CICDToolService.sync_all()` every 60s; idempotent via `external_id`.
+- **Claude prompt enrichment** — `/api/triage` correlates deployments before LLM call and prepends a `RECENT DEPLOYMENTS` block to the user message when confidence ≥ 0.3; response now includes a `deployments` array.
+- **Frontend** — `DeploymentCard` rendered at top of Triage Panel + Incident Detail with confidence badge, deployer avatar, time delta, top-3 changed files (click to copy / expand for diff), PR + CI links, one-click Rollback button (clipboard).
+- **Settings → CI/CD Integrations** — admin UI to register/edit/test/toggle tools per provider type; auto-seeds one Mock tool on first startup so the full flow demos without real credentials.
+
+
 - **Per-source ingest_token** (32-char hex) auto-generated on source creation; backfilled for legacy sources
 - **Public `POST /api/sources/{id}/ingest`** — auth via `?token=` query OR `X-Ingest-Token` header. 401 wrong token, 403 disabled source, 404 missing source.
 - **6 payload adapters** — cloudwatch (SNS ALARM/OK/INSUFFICIENT_DATA), datadog (alert_type), pagerduty (event.data.urgency), grafana/prometheus (Alertmanager multi-alert), custom passthrough. Severity normalized via `_norm_severity`.
@@ -54,11 +64,13 @@ See `/app/memory/test_credentials.md`. 4 users seeded: admin, sre1, sre2, viewer
 
 ## Backlog
 ### P1 (next)
-- Refactor server.py (now ~1156 lines) into modules (`routes/auth`, `routes/incidents`, `routes/sources`, `routes/notifications`, `services/triage`, `services/webhook_adapters`, `services/notifications`)
+- Refactor server.py (now ~1800+ lines) into modules (`routes/auth`, `routes/incidents`, `routes/sources`, `routes/notifications`, `routes/cicd`, `services/triage`, `services/webhook_adapters`, `services/cicd_adapters`, `services/notifications`)
 - RBAC: gate sources mutations + /auth/users to admin/on-call only
 - Per-source rate limiting + body-size cap on /ingest endpoint
 - Dedup window on ingested alerts (same source+title+service within N seconds)
 - AI-generated post-incident report when incident is resolved (auto-drafted summary + action items shareable as public post-mortem URL)
+- F-01: implement real GitLab / CircleCI / ArgoCD adapters (stubs already in place)
+- F-01: surface "Rollback executed" feedback loop (track whether the suggested rollback was actually run, to improve future confidence scoring)
 
 ### P2
 - Markdown rendering in chat responses + CLI command copy buttons

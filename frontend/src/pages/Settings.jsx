@@ -4,6 +4,7 @@ import { CloudUpload, Brain, Shield, CheckCircle, Plus, Trash2, Power, Copy, Eye
 import { toast, Toaster } from 'sonner';
 import { relTime } from '../lib/format';
 import NotificationsSettings from '../components/NotificationsSettings';
+import CICDToolsSettings from '../components/CICDToolsSettings';
 
 const TYPES = ['cloudwatch', 'datadog', 'pagerduty', 'grafana', 'prometheus', 'custom'];
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
@@ -164,6 +165,8 @@ export default function Settings() {
       </Section>
 
       <NotificationsSettings />
+
+      <CICDToolsSettings />
 
       <Section title="Security" icon={Shield}>
         <Row label="Authentication" value="JWT Bearer · 24h" />

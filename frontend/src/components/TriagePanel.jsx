@@ -1,5 +1,6 @@
 import React from 'react';
 import { PriorityBadge } from './Badges';
+import DeploymentCard from './DeploymentCard';
 import { Brain, ShieldAlert, Wrench, Terminal, CheckCircle, Filter, Sparkles, Clock } from 'lucide-react';
 
 const CONF_COLOR = { high: '#30D158', medium: '#D4AF37', low: '#71717A' };
@@ -51,6 +52,18 @@ export default function TriagePanel({ result, loading, onResolve }) {
       <PanelHeader status="complete" />
 
       <div className="flex-1 overflow-auto p-6 space-y-6">
+        {/* F-01: Deployment card at the very top */}
+        {result.deployments && result.deployments.length > 0 && (
+          <div data-testid="deployment-card-wrapper">
+            <DeploymentCard deployment={result.deployments[0]} />
+            {result.deployments.length > 1 && (
+              <div className="text-[11px] text-neutral-500 -mt-2 mb-2">
+                + {result.deployments.length - 1} additional correlated deployment{result.deployments.length - 1 === 1 ? '' : 's'} (lower confidence)
+              </div>
+            )}
+          </div>
+        )}
+
         {/* Header card */}
         <div className="rounded-lg border border-[#D4AF37]/20 bg-gradient-to-br from-[#D4AF37]/[0.04] to-transparent p-5">
           <div className="flex items-start gap-3 flex-wrap">
