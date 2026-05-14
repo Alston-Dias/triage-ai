@@ -11,6 +11,7 @@ import Incidents from './pages/Incidents';
 import IncidentDetail from './pages/IncidentDetail';
 import Analytics from './pages/Analytics';
 import Settings from './pages/Settings';
+import PredictiveDashboard from './components/predictive/PredictiveDashboard';
 
 function App() {
   return (
@@ -27,6 +28,7 @@ function App() {
                       <Route path="/" element={<Dashboard />} />
                       <Route path="/incidents" element={<Incidents />} />
                       <Route path="/incidents/:id" element={<IncidentDetail />} />
+                      <Route path="/predictive" element={<PredictiveDashboard />} />
                       <Route path="/analytics" element={<Analytics />} />
                       <Route path="/settings" element={<Settings />} />
                     </Routes>

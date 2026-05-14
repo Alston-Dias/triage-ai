@@ -3,7 +3,7 @@ from pathlib import Path
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
-from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, WebSocket, WebSocketDisconnect, Query
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 import os
@@ -1792,6 +1792,611 @@ async def seed_cicd_demo_tool():
 # ====================================================================================================
 # END F-01
 # ====================================================================================================
+
+
+# ====================================================================================================
+# F-02 PREDICTIVE TRIAGE
+# Anomaly-detection-based incident prediction with risk scoring, ETA, AI recommendations & live WS.
+# Adapted to repo stack: MongoDB (no InfluxDB), Mongo collections (no Alembic), Claude via
+# emergentintegrations, asyncio background loop (5 min cadence), FastAPI WebSocket.
+# ====================================================================================================
+import numpy as np
+from sklearn.ensemble import IsolationForest
+
+
+# -------------------- F-02 Models --------------------
+PredictiveStatus = Literal["open", "acknowledged", "resolved", "false_positive"]
+MetricType = Literal["cpu_usage", "memory_usage", "db_connections", "api_latency_ms", "queue_depth"]
+
+# Soft thresholds used for ETA + risk weighting (per metric, "critical" threshold).
+METRIC_CRITICAL_THRESHOLDS: Dict[str, float] = {
+    "cpu_usage": 90.0,           # %
+    "memory_usage": 92.0,        # %
+    "db_connections": 180.0,     # active connections (pool of 200)
+    "api_latency_ms": 1500.0,    # ms p95
+    "queue_depth": 5000.0,       # messages
+}
+
+METRIC_UNITS: Dict[str, str] = {
+    "cpu_usage": "%",
+    "memory_usage": "%",
+    "db_connections": "conns",
+    "api_latency_ms": "ms",
+    "queue_depth": "msgs",
+}
+
+
+class MetricSample(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    org_id: str = "default"
+    service_name: str
+    metric_type: MetricType
+    value: float
+    timestamp: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+
+
+class PredictiveIncident(BaseModel):
+    id: str = Field(default_factory=lambda: f"PRD-{uuid.uuid4().hex[:8].upper()}")
+    org_id: str = "default"
+    service_name: str
+    metric_type: MetricType
+    current_value: float
+    expected_value: float
+    anomaly_score: float                       # raw IsolationForest score (≈ -0.5..0.5; lower = more anomalous)
+    risk_score: int                            # 0..100
+    predicted_failure: bool                    # True if risk_score ≥ 70 OR ETA finite
+    estimated_time_to_incident: Optional[int]  # minutes; None if no clear trend toward threshold
+    recommended_action: str                    # AI-generated remediation
+    status: PredictiveStatus = "open"
+    created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    resolved_at: Optional[str] = None
+    resolved_by: Optional[str] = None
+
+
+# -------------------- F-02 Synthetic metric seeding --------------------
+# Demo services & their per-metric baselines (mean, stdev). One service ("checkout-svc") is configured
+# to drift upward on cpu_usage so the predictor reliably surfaces a real prediction in demos.
+PREDICTIVE_SERVICES: List[str] = [
+    "payments-api", "auth-service", "checkout-svc", "search-api", "notifications-worker",
+]
+
+_BASELINES: Dict[str, Dict[str, Dict[str, float]]] = {
+    "payments-api":         {"cpu_usage": {"mu": 42.0, "sd": 4.0},  "memory_usage": {"mu": 55.0, "sd": 3.5},
+                             "db_connections": {"mu": 60.0, "sd": 7.0}, "api_latency_ms": {"mu": 180.0, "sd": 25.0},
+                             "queue_depth": {"mu": 120.0, "sd": 40.0}},
+    "auth-service":         {"cpu_usage": {"mu": 28.0, "sd": 3.0},  "memory_usage": {"mu": 48.0, "sd": 3.0},
+                             "db_connections": {"mu": 30.0, "sd": 5.0},  "api_latency_ms": {"mu": 90.0,  "sd": 12.0},
+                             "queue_depth": {"mu": 60.0,  "sd": 20.0}},
+    "checkout-svc":         {"cpu_usage": {"mu": 55.0, "sd": 4.5},  "memory_usage": {"mu": 62.0, "sd": 4.0},
+                             "db_connections": {"mu": 95.0, "sd": 9.0},  "api_latency_ms": {"mu": 220.0, "sd": 30.0},
+                             "queue_depth": {"mu": 200.0, "sd": 60.0}},
+    "search-api":           {"cpu_usage": {"mu": 38.0, "sd": 3.5},  "memory_usage": {"mu": 51.0, "sd": 3.0},
+                             "db_connections": {"mu": 25.0, "sd": 4.0},  "api_latency_ms": {"mu": 140.0, "sd": 18.0},
+                             "queue_depth": {"mu": 40.0,  "sd": 15.0}},
+    "notifications-worker": {"cpu_usage": {"mu": 22.0, "sd": 3.0},  "memory_usage": {"mu": 45.0, "sd": 3.0},
+                             "db_connections": {"mu": 18.0, "sd": 3.0},  "api_latency_ms": {"mu": 70.0,  "sd": 10.0},
+                             "queue_depth": {"mu": 350.0, "sd": 90.0}},
+}
+
+
+def _next_sample_value(service: str, metric: MetricType, last_value: Optional[float], step_idx: int) -> float:
+    """Generate next synthetic sample. The 'checkout-svc' cpu_usage drifts upward each step so
+    the predictor reliably triggers (otherwise the dashboard looks empty in demos)."""
+    base = _BASELINES[service][metric]
+    mu, sd = base["mu"], base["sd"]
+    rng = np.random.default_rng()
+    val = float(rng.normal(mu, sd))
+    # Anomaly injection for demo realism
+    if service == "checkout-svc" and metric == "cpu_usage":
+        drift = min(35.0, 0.7 * step_idx)  # gradual upward drift, capped
+        val = float(rng.normal(mu + drift, sd))
+    elif service == "checkout-svc" and metric == "memory_usage":
+        drift = min(20.0, 0.3 * step_idx)
+        val = float(rng.normal(mu + drift, sd))
+    elif service == "payments-api" and metric == "api_latency_ms" and step_idx % 9 == 0:
+        # occasional latency spike
+        val = float(rng.normal(mu * 3.0, sd * 2))
+    # Smooth with last value to avoid wild swings
+    if last_value is not None:
+        val = 0.7 * val + 0.3 * last_value
+    # Clip to sensible ranges
+    if metric in ("cpu_usage", "memory_usage"):
+        val = max(1.0, min(100.0, val))
+    else:
+        val = max(0.0, val)
+    return round(val, 2)
+
+
+async def _seed_metric_history():
+    """Seed ~4 hours of 1-min-resolution synthetic samples for every (service, metric)."""
+    if await db.metrics.count_documents({}) > 0:
+        return
+    now = datetime.now(timezone.utc)
+    samples: List[dict] = []
+    points = 240  # 4 hours x 60
+    for service in PREDICTIVE_SERVICES:
+        for metric in METRIC_CRITICAL_THRESHOLDS.keys():
+            last: Optional[float] = None
+            for i in range(points):
+                step = i  # 0 = oldest
+                last = _next_sample_value(service, metric, last, step)
+                ts = (now - timedelta(minutes=(points - i))).isoformat()
+                samples.append(MetricSample(
+                    service_name=service, metric_type=metric, value=last, timestamp=ts,
+                ).model_dump())
+    # Bulk insert in chunks
+    chunk = 2000
+    for i in range(0, len(samples), chunk):
+        await db.metrics.insert_many(samples[i:i + chunk])
+    # Index for fast time-range queries
+    try:
+        await db.metrics.create_index([("service_name", 1), ("metric_type", 1), ("timestamp", -1)])
+    except Exception:
+        pass
+    logger.info("Seeded %d metric samples across %d services × %d metrics",
+                len(samples), len(PREDICTIVE_SERVICES), len(METRIC_CRITICAL_THRESHOLDS))
+
+
+# -------------------- F-02 WebSocket connection manager --------------------
+class _PredictiveWSManager:
+    def __init__(self):
+        self._connections: List[WebSocket] = []
+        self._lock = asyncio.Lock()
+
+    async def connect(self, ws: WebSocket):
+        await ws.accept()
+        async with self._lock:
+            self._connections.append(ws)
+
+    async def disconnect(self, ws: WebSocket):
+        async with self._lock:
+            if ws in self._connections:
+                self._connections.remove(ws)
+
+    async def broadcast(self, payload: dict):
+        msg = json.dumps(payload, default=str)
+        dead: List[WebSocket] = []
+        async with self._lock:
+            conns = list(self._connections)
+        for ws in conns:
+            try:
+                await ws.send_text(msg)
+            except Exception:
+                dead.append(ws)
+        if dead:
+            async with self._lock:
+                for ws in dead:
+                    if ws in self._connections:
+                        self._connections.remove(ws)
+
+
+predictive_ws_manager = _PredictiveWSManager()
+
+
+# -------------------- F-02 Predictor service --------------------
+class PredictorService:
+    """
+    Pipeline:
+      1. Pull recent metric samples per (service, metric) from Mongo.
+      2. Run IsolationForest to score anomalies.
+      3. Compute deviation from baseline (rolling mean) → risk score 0..100.
+      4. Estimate time-to-incident via linear extrapolation toward critical threshold.
+      5. If risk_score ≥ 60 OR predicted_failure: ask Claude for preventive recommendation.
+      6. Upsert PredictiveIncident and broadcast over WS.
+    """
+    LOOKBACK_POINTS = 120        # ~2 hours at 1-min resolution
+    TRAIN_CONTAMINATION = 0.05   # IsolationForest expected outlier fraction
+    RISK_THRESHOLD_OPEN = 50     # below this we don't persist an incident
+    RECOMMEND_THRESHOLD = 60
+
+    @staticmethod
+    async def _fetch_series(service: str, metric: str, n: int = 120) -> List[dict]:
+        cur = db.metrics.find(
+            {"service_name": service, "metric_type": metric},
+            {"_id": 0, "value": 1, "timestamp": 1},
+        ).sort("timestamp", -1).limit(n)
+        rows = await cur.to_list(n)
+        rows.reverse()  # chronological
+        return rows
+
+    @staticmethod
+    def _score_series(values: np.ndarray) -> Dict[str, float]:
+        """Return anomaly_score (raw IF, lower=more anomalous), normalized_anomaly (0..1),
+        expected_value (rolling mean of all but last 10), trend_slope (units / minute)."""
+        if len(values) < 30:
+            return {"anomaly_score": 0.0, "normalized_anomaly": 0.0,
+                    "expected_value": float(values.mean()) if len(values) else 0.0,
+                    "trend_slope": 0.0}
+        x = values.reshape(-1, 1)
+        try:
+            model = IsolationForest(
+                n_estimators=80, contamination=PredictorService.TRAIN_CONTAMINATION, random_state=42,
+            )
+            model.fit(x[:-10] if len(x) > 15 else x)  # train on older data, evaluate on recent
+            raw = float(model.score_samples(x[-1:].reshape(1, -1))[0])  # ≈ -0.5..0.5
+        except Exception as e:
+            logger.warning("IsolationForest failed: %s", e)
+            raw = 0.0
+        # Map raw IF score (typical range ~ -0.5..0.2; more negative = more anomalous) → 0..1
+        normalized = max(0.0, min(1.0, (0.0 - raw) / 0.3 + 0.1))
+        expected = float(values[:-10].mean()) if len(values) > 10 else float(values.mean())
+        # Trend slope via simple linear regression on last 30 points (samples are ~1 min apart)
+        recent = values[-30:] if len(values) >= 30 else values
+        t = np.arange(len(recent), dtype=float)
+        if recent.std() > 0:
+            slope = float(np.polyfit(t, recent, 1)[0])
+        else:
+            slope = 0.0
+        return {
+            "anomaly_score": raw,
+            "normalized_anomaly": normalized,
+            "expected_value": expected,
+            "trend_slope": slope,
+        }
+
+    @staticmethod
+    def _risk_and_eta(metric: str, current: float, expected: float, normalized_anomaly: float,
+                      trend_slope: float) -> Dict[str, Any]:
+        threshold = METRIC_CRITICAL_THRESHOLDS[metric]
+        # Deviation component: how much over baseline relative to (threshold - baseline)
+        denom = max(1e-6, threshold - expected)
+        deviation = max(0.0, (current - expected) / denom)  # 0..1+ when approaching threshold
+        deviation_norm = max(0.0, min(1.0, deviation))
+        # Composite: 60% anomaly, 30% deviation, 10% headroom-to-threshold
+        headroom = max(0.0, min(1.0, current / threshold))
+        risk = 0.6 * normalized_anomaly + 0.3 * deviation_norm + 0.1 * headroom
+        risk_score = int(round(max(0.0, min(1.0, risk)) * 100))
+        # ETA in minutes via linear extrapolation
+        eta_min: Optional[int] = None
+        if trend_slope > 1e-4 and current < threshold:
+            minutes = (threshold - current) / trend_slope
+            if 0 < minutes < 8 * 60:  # only show ETA within 8 hours
+                eta_min = int(round(minutes))
+        predicted_failure = risk_score >= 70 or (eta_min is not None and eta_min <= 60)
+        return {
+            "risk_score": risk_score,
+            "estimated_time_to_incident": eta_min,
+            "predicted_failure": predicted_failure,
+        }
+
+    @staticmethod
+    async def _generate_recommendation(service: str, metric: str, current: float,
+                                       expected: float, risk_score: int,
+                                       eta_min: Optional[int]) -> str:
+        """Ask Claude for a concise, actionable preventive remediation. Falls back to a static
+        template if the LLM is unavailable."""
+        unit = METRIC_UNITS.get(metric, "")
+        threshold = METRIC_CRITICAL_THRESHOLDS[metric]
+        prompt = (
+            f"You are an SRE copilot. A predictive anomaly detector found a developing issue "
+            f"in service '{service}' on metric '{metric}'.\n\n"
+            f"Context:\n"
+            f"- Current value: {current:.2f}{unit}\n"
+            f"- Expected baseline: {expected:.2f}{unit}\n"
+            f"- Critical threshold: {threshold}{unit}\n"
+            f"- Risk score: {risk_score}/100\n"
+            f"- Estimated time to incident: {eta_min if eta_min is not None else 'unclear'} minutes\n\n"
+            f"Reply with 1-3 specific PREVENTIVE actions an on-call engineer should take RIGHT NOW "
+            f"to avoid this incident. Include exact kubectl/SQL/CLI commands where relevant. "
+            f"Keep total length under 600 characters. Plain text only — no markdown headings."
+        )
+        if not EMERGENT_LLM_KEY:
+            return PredictorService._fallback_recommendation(service, metric, current, expected, eta_min)
+        try:
+            chat = LlmChat(
+                api_key=EMERGENT_LLM_KEY,
+                session_id=f"predict-{service}-{metric}-{uuid.uuid4().hex[:6]}",
+                system_message="You are TriageAI's predictive remediation engine. Be concise and operational.",
+            ).with_model("anthropic", "claude-sonnet-4-5-20250929")
+            text = await chat.send_message(UserMessage(text=prompt))
+            return (text or "").strip()[:1500] or PredictorService._fallback_recommendation(
+                service, metric, current, expected, eta_min)
+        except Exception as e:
+            logger.warning("Claude recommendation failed for %s/%s: %s", service, metric, e)
+            return PredictorService._fallback_recommendation(service, metric, current, expected, eta_min)
+
+    @staticmethod
+    def _fallback_recommendation(service: str, metric: str, current: float, expected: float,
+                                 eta_min: Optional[int]) -> str:
+        eta = f"~{eta_min}m to threshold" if eta_min is not None else "trend unclear"
+        recipes = {
+            "cpu_usage": (f"CPU on {service} is {current:.1f}% (baseline {expected:.1f}%). "
+                          f"1) Scale out replicas: kubectl scale deploy/{service} --replicas=+2  "
+                          f"2) Profile hot code paths and check for runaway loops. ({eta})"),
+            "memory_usage": (f"Memory on {service} at {current:.1f}%. "
+                             f"1) Bump request/limit memory by 25%  2) Trigger a rolling restart: "
+                             f"kubectl rollout restart deploy/{service}  3) Look for leaks in last deploy. ({eta})"),
+            "db_connections": (f"DB connections on {service} = {current:.0f}. "
+                               f"1) Increase pool max_size or add a pgbouncer pool  "
+                               f"2) Audit long-running queries (pg_stat_activity).  ({eta})"),
+            "api_latency_ms": (f"p95 latency on {service} = {current:.0f}ms (baseline {expected:.0f}ms). "
+                               f"1) Check downstream service health  2) Inspect slow query log  "
+                               f"3) Enable circuit breaker on noisy callers. ({eta})"),
+            "queue_depth": (f"Queue depth on {service} = {current:.0f} msgs. "
+                            f"1) Scale workers: kubectl scale deploy/{service}-worker --replicas=+3  "
+                            f"2) Verify consumer lag in Kafka.  ({eta})"),
+        }
+        return recipes.get(metric, f"Investigate anomalous {metric} on {service}. ({eta})")
+
+    @classmethod
+    async def run(cls, org_id: str = "default", services: Optional[List[str]] = None) -> List[dict]:
+        """Run full prediction pipeline. Returns list of new/updated PredictiveIncident dicts."""
+        target_services = services or PREDICTIVE_SERVICES
+        created: List[dict] = []
+        for service in target_services:
+            for metric in METRIC_CRITICAL_THRESHOLDS.keys():
+                series = await cls._fetch_series(service, metric, cls.LOOKBACK_POINTS)
+                if len(series) < 30:
+                    continue
+                values = np.array([s["value"] for s in series], dtype=float)
+                current_value = float(values[-1])
+                stats = cls._score_series(values)
+                risk = cls._risk_and_eta(
+                    metric, current_value, stats["expected_value"],
+                    stats["normalized_anomaly"], stats["trend_slope"],
+                )
+                if risk["risk_score"] < cls.RISK_THRESHOLD_OPEN:
+                    # Auto-resolve any lingering open prediction for this (service, metric)
+                    await db.predictive_incidents.update_many(
+                        {"org_id": org_id, "service_name": service, "metric_type": metric,
+                         "status": {"$in": ["open", "acknowledged"]}},
+                        {"$set": {"status": "resolved",
+                                  "resolved_at": datetime.now(timezone.utc).isoformat(),
+                                  "resolved_by": "auto:trend-normalized"}},
+                    )
+                    continue
+                # Skip if there's already an open incident for the same (service, metric)
+                existing = await db.predictive_incidents.find_one(
+                    {"org_id": org_id, "service_name": service, "metric_type": metric,
+                     "status": {"$in": ["open", "acknowledged"]}},
+                    {"_id": 0},
+                )
+                if existing:
+                    # Refresh dynamic fields on the existing open incident
+                    update = {
+                        "current_value": current_value,
+                        "expected_value": round(stats["expected_value"], 2),
+                        "anomaly_score": round(stats["anomaly_score"], 4),
+                        "risk_score": risk["risk_score"],
+                        "predicted_failure": risk["predicted_failure"],
+                        "estimated_time_to_incident": risk["estimated_time_to_incident"],
+                    }
+                    await db.predictive_incidents.update_one({"id": existing["id"]}, {"$set": update})
+                    existing.update(update)
+                    created.append(existing)
+                    continue
+                # New prediction → optionally ask Claude
+                if risk["risk_score"] >= cls.RECOMMEND_THRESHOLD or risk["predicted_failure"]:
+                    rec = await cls._generate_recommendation(
+                        service, metric, current_value, stats["expected_value"],
+                        risk["risk_score"], risk["estimated_time_to_incident"],
+                    )
+                else:
+                    rec = cls._fallback_recommendation(
+                        service, metric, current_value, stats["expected_value"],
+                        risk["estimated_time_to_incident"],
+                    )
+                inc = PredictiveIncident(
+                    org_id=org_id,
+                    service_name=service,
+                    metric_type=metric,
+                    current_value=current_value,
+                    expected_value=round(stats["expected_value"], 2),
+                    anomaly_score=round(stats["anomaly_score"], 4),
+                    risk_score=risk["risk_score"],
+                    predicted_failure=risk["predicted_failure"],
+                    estimated_time_to_incident=risk["estimated_time_to_incident"],
+                    recommended_action=rec,
+                )
+                await db.predictive_incidents.insert_one(inc.model_dump())
+                created.append(inc.model_dump())
+                # Broadcast over WS
+                await predictive_ws_manager.broadcast({"event": "prediction.new", "data": inc.model_dump()})
+        return created
+
+
+# -------------------- F-02 API endpoints --------------------
+@api_router.post("/predictive-triage")
+async def trigger_predictive_triage(current_user: dict = Depends(get_current_user)):
+    """Force-run the predictor pipeline immediately. Useful for the 'Refresh' button and tests."""
+    results = await PredictorService.run(org_id="default")
+    return {"generated": len(results), "predictions": results}
+
+
+@api_router.get("/predictive-incidents")
+async def list_predictive_incidents(
+    status: Optional[PredictiveStatus] = None,
+    service: Optional[str] = None,
+    min_risk: int = 0,
+    limit: int = 200,
+    current_user: dict = Depends(get_current_user),
+):
+    q: Dict[str, Any] = {"org_id": "default"}
+    if status:
+        q["status"] = status
+    if service:
+        q["service_name"] = service
+    if min_risk:
+        q["risk_score"] = {"$gte": int(min_risk)}
+    docs = await db.predictive_incidents.find(q, {"_id": 0}).sort([
+        ("risk_score", -1), ("created_at", -1),
+    ]).to_list(limit)
+    return docs
+
+
+@api_router.patch("/predictive-incidents/{incident_id}/resolve")
+async def resolve_predictive_incident(
+    incident_id: str,
+    current_user: dict = Depends(get_current_user),
+):
+    res = await db.predictive_incidents.update_one(
+        {"id": incident_id},
+        {"$set": {
+            "status": "resolved",
+            "resolved_at": datetime.now(timezone.utc).isoformat(),
+            "resolved_by": current_user["email"],
+        }},
+    )
+    if res.matched_count == 0:
+        raise HTTPException(404, "Predictive incident not found")
+    doc = await db.predictive_incidents.find_one({"id": incident_id}, {"_id": 0})
+    await predictive_ws_manager.broadcast({"event": "prediction.resolved", "data": doc})
+    return doc
+
+
+@api_router.patch("/predictive-incidents/{incident_id}/acknowledge")
+async def acknowledge_predictive_incident(
+    incident_id: str,
+    current_user: dict = Depends(get_current_user),
+):
+    res = await db.predictive_incidents.update_one(
+        {"id": incident_id, "status": "open"}, {"$set": {"status": "acknowledged"}},
+    )
+    if res.matched_count == 0:
+        raise HTTPException(404, "Predictive incident not found or already acknowledged")
+    doc = await db.predictive_incidents.find_one({"id": incident_id}, {"_id": 0})
+    return doc
+
+
+@api_router.get("/predictive-incidents/{incident_id}/trend")
+async def predictive_incident_trend(
+    incident_id: str,
+    points: int = Query(120, ge=10, le=480),
+    current_user: dict = Depends(get_current_user),
+):
+    """Return the underlying metric series + threshold so the frontend can draw a trend graph."""
+    inc = await db.predictive_incidents.find_one({"id": incident_id}, {"_id": 0})
+    if not inc:
+        raise HTTPException(404, "Predictive incident not found")
+    series = await PredictorService._fetch_series(inc["service_name"], inc["metric_type"], points)
+    return {
+        "incident": inc,
+        "threshold": METRIC_CRITICAL_THRESHOLDS.get(inc["metric_type"]),
+        "unit": METRIC_UNITS.get(inc["metric_type"], ""),
+        "series": series,
+    }
+
+
+@api_router.get("/predictive-services/summary")
+async def predictive_services_summary(current_user: dict = Depends(get_current_user)):
+    """Per-service rollup used for the 'High Risk Services' strip + Risk Score Cards."""
+    pipeline = [
+        {"$match": {"org_id": "default", "status": {"$in": ["open", "acknowledged"]}}},
+        {"$group": {
+            "_id": "$service_name",
+            "max_risk": {"$max": "$risk_score"},
+            "avg_risk": {"$avg": "$risk_score"},
+            "predictions": {"$sum": 1},
+            "min_eta": {"$min": "$estimated_time_to_incident"},
+        }},
+        {"$sort": {"max_risk": -1}},
+    ]
+    rows = await db.predictive_incidents.aggregate(pipeline).to_list(50)
+    # Ensure every known service appears (even healthy ones)
+    by_service = {r["_id"]: r for r in rows}
+    out = []
+    for svc in PREDICTIVE_SERVICES:
+        r = by_service.get(svc)
+        if r:
+            out.append({
+                "service_name": svc,
+                "max_risk": int(r["max_risk"] or 0),
+                "avg_risk": int(round(r["avg_risk"] or 0)),
+                "predictions": int(r["predictions"] or 0),
+                "min_eta": r["min_eta"],
+            })
+        else:
+            out.append({"service_name": svc, "max_risk": 0, "avg_risk": 0,
+                        "predictions": 0, "min_eta": None})
+    return out
+
+
+# -------------------- F-02 WebSocket --------------------
+# NB: routed under /api/* so the k8s ingress maps it to the backend container on :8001.
+@app.websocket("/api/ws/predictive-alerts")
+async def ws_predictive_alerts(ws: WebSocket):
+    # Optional token auth via query param (?token=...). Falls back to anonymous read-only for demos.
+    token = ws.query_params.get("token", "")
+    if token:
+        try:
+            jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        except Exception:
+            await ws.close(code=4401)
+            return
+    await predictive_ws_manager.connect(ws)
+    try:
+        # Greet the client with current open predictions
+        opens = await db.predictive_incidents.find(
+            {"org_id": "default", "status": {"$in": ["open", "acknowledged"]}}, {"_id": 0},
+        ).sort("risk_score", -1).to_list(50)
+        await ws.send_text(json.dumps({"event": "snapshot", "data": opens}, default=str))
+        while True:
+            # We mostly broadcast → client doesn't need to send anything, but support a ping.
+            msg = await ws.receive_text()
+            if msg == "ping":
+                await ws.send_text(json.dumps({"event": "pong"}))
+    except WebSocketDisconnect:
+        pass
+    except Exception as e:
+        logger.warning("Predictive WS error: %s", e)
+    finally:
+        await predictive_ws_manager.disconnect(ws)
+
+
+# -------------------- F-02 Background loop --------------------
+_predictive_task_started = False
+
+
+async def _periodic_predictive_run():
+    """Every 5 minutes: append a fresh sample per (service, metric) to simulate live metrics,
+    then run the predictor and broadcast new findings."""
+    await asyncio.sleep(15)  # warm-up after startup
+    step = 240  # continues from where seeding left off (so checkout-svc keeps drifting)
+    while True:
+        try:
+            now_iso = datetime.now(timezone.utc).isoformat()
+            new_samples: List[dict] = []
+            for service in PREDICTIVE_SERVICES:
+                for metric in METRIC_CRITICAL_THRESHOLDS.keys():
+                    last = await db.metrics.find_one(
+                        {"service_name": service, "metric_type": metric},
+                        {"_id": 0, "value": 1}, sort=[("timestamp", -1)],
+                    )
+                    last_v = float(last["value"]) if last else None
+                    v = _next_sample_value(service, metric, last_v, step)
+                    new_samples.append(MetricSample(
+                        service_name=service, metric_type=metric, value=v, timestamp=now_iso,
+                    ).model_dump())
+            if new_samples:
+                await db.metrics.insert_many(new_samples)
+            await PredictorService.run(org_id="default")
+            step += 1
+        except Exception as e:
+            logger.exception("Periodic predictive run failed: %s", e)
+        await asyncio.sleep(300)  # 5 minutes
+
+
+@app.on_event("startup")
+async def f02_startup():
+    await _seed_metric_history()
+    # Index for predictive_incidents
+    try:
+        await db.predictive_incidents.create_index([("org_id", 1), ("status", 1), ("risk_score", -1)])
+    except Exception:
+        pass
+    global _predictive_task_started
+    if not _predictive_task_started:
+        _predictive_task_started = True
+        asyncio.create_task(_periodic_predictive_run())
+        # Also do an initial run immediately so the dashboard isn't empty on first load
+        asyncio.create_task(PredictorService.run(org_id="default"))
+        logger.info("F-02 Predictive Triage started (5-min cadence)")
+
+
+# ====================================================================================================
+# END F-02
+# ====================================================================================================
+
 
 
 app.include_router(api_router)
