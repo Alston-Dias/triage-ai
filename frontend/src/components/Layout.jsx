@@ -1,6 +1,6 @@
 import React from 'react';
 import { NavLink, useLocation } from 'react-router-dom';
-import { Activity, Radio, LineChart as ChartLine, Settings as Gear, Zap as Lightning, LogOut, Sun, Moon } from 'lucide-react';
+import { Activity, Radio, LineChart as ChartLine, Settings as Gear, Zap as Lightning, LogOut, Sun, Moon, TrendingUp } from 'lucide-react';
 import { useAuth } from '../lib/auth';
 import { useTheme } from '../lib/theme';
 import UnattendedBanner from './UnattendedBanner';
@@ -8,6 +8,7 @@ import UnattendedBanner from './UnattendedBanner';
 const NAV = [
   { to: '/', label: 'Live Triage', icon: Radio, testid: 'nav-triage' },
   { to: '/incidents', label: 'Incidents', icon: Activity, testid: 'nav-incidents' },
+  { to: '/predictive', label: 'Predictive', icon: TrendingUp, testid: 'nav-predictive' },
   { to: '/analytics', label: 'Analytics', icon: ChartLine, testid: 'nav-analytics' },
   { to: '/settings', label: 'Settings', icon: Gear, testid: 'nav-settings' },
 ];

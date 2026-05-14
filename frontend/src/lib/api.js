@@ -69,3 +69,23 @@ export const testCICDTool = (id) => api.post(`/cicd/tools/${id}/test`).then(r =>
 export const syncAllCICD = () => api.post('/cicd/sync-all').then(r => r.data);
 export const fetchIncidentDeployments = (id, params = {}) =>
   api.get(`/incidents/${id}/deployments`, { params }).then(r => r.data);
+
+// F-02 — Predictive Triage
+export const triggerPredictiveTriage = () => api.post('/predictive-triage').then(r => r.data);
+export const fetchPredictiveIncidents = (params = {}) =>
+  api.get('/predictive-incidents', { params }).then(r => r.data);
+export const fetchPredictiveSummary = () =>
+  api.get('/predictive-services/summary').then(r => r.data);
+export const fetchPredictiveTrend = (id, points = 120) =>
+  api.get(`/predictive-incidents/${id}/trend`, { params: { points } }).then(r => r.data);
+export const resolvePredictiveIncident = (id) =>
+  api.patch(`/predictive-incidents/${id}/resolve`).then(r => r.data);
+export const acknowledgePredictiveIncident = (id) =>
+  api.patch(`/predictive-incidents/${id}/acknowledge`).then(r => r.data);
+
+// WebSocket URL helper for predictive alerts (browser opens this directly)
+export const predictiveWSUrl = () => {
+  const base = (process.env.REACT_APP_BACKEND_URL || '').replace(/^http/, 'ws');
+  const token = localStorage.getItem('triage_token') || '';
+  return `${base}/api/ws/predictive-alerts${token ? `?token=${encodeURIComponent(token)}` : ''}`;
+};
