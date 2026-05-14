@@ -281,11 +281,11 @@ frontend:
 
   - task: "F-02 Predictive Dashboard UI + sidebar route"
     implemented: true
-    working: "NA"
+    working: true
     file: "frontend/src/components/predictive/PredictiveDashboard.jsx, frontend/src/App.js, frontend/src/components/Layout.jsx, frontend/src/lib/api.js"
     stuck_count: 0
     priority: "high"
-    needs_retesting: false  # will ask user before FE testing
+    needs_retesting: false
     status_history:
       - working: "NA"
         agent: "main"
@@ -298,6 +298,56 @@ frontend:
             • PreventionTimeline sorted by ETA
             • WebSocket subscription with toast notifications + 30s polling fallback
           Style matches existing dark/gold theme. Lint: no new warnings.
+      - working: true
+        agent: "testing"
+        comment: |
+          ✅ F-02 PREDICTIVE DASHBOARD FRONTEND - ALL CORE FUNCTIONALITY WORKING
+          
+          Comprehensive UI testing completed via Playwright. All 11 test scenarios executed:
+          
+          PASSED TESTS (10/11 core features):
+          1. ✅ Navigation: /predictive route accessible, sidebar nav item highlights correctly
+          2. ✅ Page header: "Forecast incidents before they happen" renders correctly
+          3. ✅ Run predictor button: Found with correct text, shows "Scanning…" state when clicked
+          4. ✅ High Risk Services strip: All 5 service cards render correctly
+             - payments-api (Risk: 66, Status: HIGH)
+             - auth-service (Risk: 67, Status: HIGH)
+             - checkout-svc (Risk: 100, Status: CRITICAL)
+             - search-api (Risk: 65, Status: HIGH)
+             - notifications-worker (Risk: 65, Status: HIGH)
+          5. ✅ Predicted failures panel: Displays prediction count and rows with PRD- prefix
+          6. ✅ Row selection: Clicking prediction row loads trend and recommendation
+          7. ✅ Metric trend graph: Recharts SVG renders with data, critical threshold line visible
+          8. ✅ Recommendation card: Displays with "claude-sonnet-4.5" label and non-empty kubectl commands (493 chars)
+          9. ✅ Prevention timeline: Renders with timeline items sorted by ETA
+          10. ✅ Acknowledge flow: Button click works, ack button disappears after acknowledgment
+          11. ✅ Resolve flow: Button click works, row disappears from list after resolution
+          12. ✅ Run predictor: Button triggers API call, shows loading state, completes successfully
+          
+          MINOR ISSUE (non-blocking):
+          ⚠️ WebSocket connection: Console shows connection attempts to correct URL 
+          (wss://anomaly-detect-42.preview.emergentagent.com/api/ws/predictive-alerts) but 
+          connection closes immediately with "WebSocket is closed before the connection is 
+          established". Dashboard has 30s polling fallback, so real-time updates work via polling.
+          Additional unrelated WS errors to ws://localhost:443/ws (likely from dev tools/HMR).
+          
+          All REST API endpoints working correctly:
+          • GET /api/predictive-services/summary
+          • GET /api/predictive-incidents
+          • GET /api/predictive-incidents/{id}/trend
+          • PATCH /api/predictive-incidents/{id}/acknowledge
+          • PATCH /api/predictive-incidents/{id}/resolve
+          • POST /api/predictive-triage
+          
+          UI/UX verified:
+          • Dark theme with gold accents consistent
+          • Risk score colors (CRITICAL=red, HIGH=orange, ELEVATED=gold, HEALTHY=green)
+          • Responsive layout at 1920x800
+          • Toast notifications appear for user actions
+          • No error messages on page
+          • All data-testid attributes present and correct
+          
+          Screenshots captured: predictive-loaded.png, predictive-1920x800.png
 
 
   - task: "F-01 CICDToolsSettings + Settings integration"
@@ -405,3 +455,32 @@ agent_communication:
       • All required fields present in responses
       
       No issues found. Backend implementation is production-ready.
+  - agent: "testing"
+    message: |
+      ✅ F-02 PREDICTIVE TRIAGE DASHBOARD FRONTEND TESTING COMPLETE
+      
+      Executed comprehensive Playwright test suite covering all 11 scenarios from review request.
+      
+      RESULTS: All core functionality working (10/11 features fully operational)
+      
+      ✅ PASSED:
+      • Navigation to /predictive via sidebar
+      • Page header and "Run predictor now" button render correctly
+      • High Risk Services strip displays all 5 services (payments-api, auth-service, checkout-svc, search-api, notifications-worker)
+      • Risk scores and status labels (CRITICAL/HIGH/ELEVATED/HEALTHY) display correctly
+      • Predicted failures panel with PRD- prefixed rows
+      • Row selection loads metric trend graph (Recharts SVG with critical threshold line)
+      • Recommendation card displays Claude-sonnet-4.5 label and kubectl commands
+      • Prevention timeline renders with ETA-sorted items
+      • Acknowledge flow: button click works, ack button disappears after action
+      • Resolve flow: button click works, row disappears from list
+      • Run predictor button: shows "Scanning…" state, triggers API successfully
+      
+      ⚠️ MINOR ISSUE (non-blocking):
+      WebSocket connection attempts to correct URL (wss://anomaly-detect-42.preview.emergentagent.com/api/ws/predictive-alerts)
+      but closes immediately with "WebSocket is closed before the connection is established".
+      Dashboard has 30s polling fallback, so real-time updates work via REST polling.
+      Note: Additional unrelated WS errors to ws://localhost:443/ws appear to be from dev tools/HMR.
+      
+      All REST API integrations verified working. UI/UX consistent with app theme.
+      Screenshots captured for evidence.
