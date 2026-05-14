@@ -59,3 +59,13 @@ export const toggleSource = (id) => api.patch(`/sources/${id}`).then(r => r.data
 
 // Analytics
 export const fetchAnalytics = () => api.get('/analytics/summary').then(r => r.data);
+
+// F-01 — CI/CD tools & deployment correlation
+export const fetchCICDTools = () => api.get('/cicd/tools').then(r => r.data);
+export const addCICDTool = (data) => api.post('/cicd/tools', data).then(r => r.data);
+export const updateCICDTool = (id, data) => api.patch(`/cicd/tools/${id}`, data).then(r => r.data);
+export const deleteCICDTool = (id) => api.delete(`/cicd/tools/${id}`).then(r => r.data);
+export const testCICDTool = (id) => api.post(`/cicd/tools/${id}/test`).then(r => r.data);
+export const syncAllCICD = () => api.post('/cicd/sync-all').then(r => r.data);
+export const fetchIncidentDeployments = (id, params = {}) =>
+  api.get(`/incidents/${id}/deployments`, { params }).then(r => r.data);
