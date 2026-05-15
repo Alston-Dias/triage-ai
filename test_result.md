@@ -110,6 +110,36 @@ user_problem_statement: |
   For every issue the user can request a Claude-generated concrete fix; if the user supplies a GitHub repo (URL + optional PAT), we auto-fetch the affected file so the patched_file/diff is real.
 
 backend:
+  - task: "Code Quality v2 — integration enable/disable toggle"
+    implemented: true
+    working: true
+    file: "backend/code_quality_v2.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: "New PATCH /api/code-quality/integrations/{id} accepts {enabled?, name?}. When enabled is false, POST /api/code-quality/integrations/{id}/sync returns 400 'Integration is disabled. Enable it to sync.' Default for new integrations is enabled=true."
+        - working: true
+          agent: "testing"
+          comment: "✅ ALL TESTS PASSED. PATCH /api/code-quality/integrations/{id} tested with 6 scenarios: (1) Disable integration - enabled=false returned, token excluded from response. (2) Sync disabled integration - correctly returns 400 with 'Integration is disabled. Enable it to sync.' message (FIXED: added missing check in sync endpoint). (3) Re-enable integration - enabled=true returned. (4) Rename integration - name updated correctly. (5) Empty body - returns 400. (6) Non-existent ID - returns 404. Auth enforcement verified (401 without token)."
+
+  - task: "Code Quality v2 — demo data seeder"
+    implemented: true
+    working: true
+    file: "backend/code_quality_v2.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: "New POST /api/code-quality/demo/seed?reset=true|false. Seeds 3 integrations (one disabled), 5 scans (4 done + 1 failed), 17 issues across multiple files/severities, and one pre-baked AI fix on the first blocker issue. Scoped to the current authenticated user."
+        - working: true
+          agent: "testing"
+          comment: "✅ ALL TESTS PASSED. POST /api/code-quality/demo/seed tested with 7 scenarios: (1) With reset=true - returns {ok:true, reset:true, integrations_added:3, scans_added:5, issues_added:17}. (2) GET /integrations after seed - returns 3 items, one disabled (Semgrep), tokens never exposed. (3) GET /scans after seed - returns 5 items, one failed, two from integration source. (4) GET /scans/{id}/issues for GitHub scan (acme-corp/checkout-service) - returns 8 issues, one with pre-baked fix containing all required fields (explanation, patched_file, diff, test_hint). (5) Without reset (reset=false) - cumulative seeding works, integrations increased 3→6, scans increased 5→10. (6) Auth enforcement - returns 401 without token. (7) Smoke check - GET /scans still works after all operations."
+
   - task: "Code Quality v2 — GitHub URL scan endpoint"
     implemented: true
     working: true
@@ -295,6 +325,73 @@ agent_communication:
         ✅ Existing SonarQube endpoints still operational
         
         All Code Quality v2 backend endpoints are production-ready. No critical issues found.
+    
+    - agent: "testing"
+      message: |
+        ✅ CODE QUALITY V2 - FOCUSED REGRESSION TEST COMPLETE - ALL TESTS PASSED (13/13)
+        
+        Executed comprehensive regression test for NEW endpoints: demo/seed and integrations PATCH.
+        
+        CRITICAL BUG FIXED:
+        • Missing disabled integration check in sync endpoint - added validation to return 400 when integration is disabled
+        
+        TEST RESULTS:
+        
+        1. ✅ POST /api/code-quality/demo/seed?reset=true
+           - Returns 200 with {ok:true, reset:true, integrations_added:3, scans_added:5, issues_added:17}
+           - All counts >= 1 as required
+        
+        2. ✅ GET /api/code-quality/integrations after seed
+           - Returns 3 integrations (>= 3 requirement met)
+           - One disabled integration (Semgrep with enabled=false)
+           - Tokens NEVER exposed in response (token_set flag used instead)
+        
+        3. ✅ GET /api/code-quality/scans after seed
+           - Returns 5 scans (>= 5 requirement met)
+           - At least one with status="failed" ✓
+           - At least one with source="integration" ✓
+        
+        4. ✅ GET /api/code-quality/scans/{id}/issues for GitHub scan (acme-corp/checkout-service)
+           - Returns 8 issues
+           - At least one issue has pre-baked fix with all required fields:
+             * explanation ✓
+             * patched_file ✓
+             * diff ✓
+             * test_hint ✓
+        
+        5. ✅ PATCH /api/code-quality/integrations/{id} - Disable
+           - Returns 200 with enabled=false
+           - Token excluded from response
+        
+        6. ✅ POST /api/code-quality/integrations/{id}/sync on disabled integration
+           - Returns 400 (NOT 500) ✓
+           - Detail message mentions "disabled" ✓
+        
+        7. ✅ PATCH /api/code-quality/integrations/{id} - Re-enable
+           - Returns 200 with enabled=true
+        
+        8. ✅ PATCH /api/code-quality/integrations/{id} - Rename
+           - Returns 200 with updated name
+        
+        9. ✅ PATCH /api/code-quality/integrations/{id} - Empty body
+           - Returns 400 as expected
+        
+        10. ✅ PATCH /api/code-quality/integrations/{id} - Non-existent ID
+            - Returns 404 as expected
+        
+        11. ✅ POST /api/code-quality/demo/seed (reset=false)
+            - Returns 200
+            - Cumulative seeding works: integrations 3→6, scans 5→10
+            - No 500 errors
+        
+        12. ✅ Auth enforcement
+            - POST /api/code-quality/demo/seed returns 401 without Authorization
+            - PATCH /api/code-quality/integrations/{id} returns 401 without Authorization
+        
+        13. ✅ Smoke check
+            - GET /api/code-quality/scans still works after all operations (no 500)
+        
+        All requirements from review request verified and working correctly.
 
 user_problem_statement: |
   F-01 Deployment Change Correlation. Auto-surface the deployment that caused the

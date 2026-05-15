@@ -27,7 +27,7 @@ import subprocess
 import tempfile
 import uuid
 import zipfile
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional
 
@@ -90,6 +90,12 @@ class IntegrationIn(BaseModel):
     project_key: Optional[str] = None     # SonarQube projectKey, GH "owner/repo", Semgrep deployment slug, Snyk project id
     org: Optional[str] = None             # Snyk org id, SonarCloud organization
     extra: Dict[str, Any] = Field(default_factory=dict)
+    enabled: bool = True
+
+
+class IntegrationPatch(BaseModel):
+    enabled: Optional[bool] = None
+    name: Optional[str] = None
 
 
 class FixReq(BaseModel):
@@ -688,11 +694,34 @@ def build_router(db, get_current_user) -> APIRouter:
             "project_key": body.project_key,
             "org": body.org,
             "extra": body.extra or {},
+            "enabled": body.enabled,
             "created_at": _now(),
             "last_sync_at": None,
             "last_status": None,
         }
         await db.cq_integrations.insert_one(doc)
+        return _public_integration(doc)
+
+    @router.patch("/integrations/{integration_id}")
+    async def update_integration(
+        integration_id: str,
+        body: IntegrationPatch,
+        current_user: dict = Depends(get_current_user),
+    ):
+        updates: Dict[str, Any] = {}
+        if body.enabled is not None:
+            updates["enabled"] = body.enabled
+        if body.name is not None:
+            updates["name"] = body.name
+        if not updates:
+            raise HTTPException(400, "No fields to update")
+        r = await db.cq_integrations.update_one(
+            {"id": integration_id, "user_email": current_user["email"]},
+            {"$set": updates},
+        )
+        if r.matched_count == 0:
+            raise HTTPException(404, "Integration not found")
+        doc = await db.cq_integrations.find_one({"id": integration_id})
         return _public_integration(doc)
 
     @router.delete("/integrations/{integration_id}")
@@ -707,6 +736,8 @@ def build_router(db, get_current_user) -> APIRouter:
         integ = await db.cq_integrations.find_one({"id": integration_id, "user_email": current_user["email"]})
         if not integ:
             raise HTTPException(404, "Integration not found")
+        if not integ.get("enabled", True):
+            raise HTTPException(400, "Integration is disabled. Enable it to sync.")
         scan = await _insert_scan(
             user_email=current_user["email"],
             source="integration",
@@ -830,4 +861,482 @@ def build_router(db, get_current_user) -> APIRouter:
             raise HTTPException(404, "Issue not found")
         return doc
 
+    # ---------- Demo data seeder ----------
+    @router.post("/demo/seed")
+    async def seed_demo_data(
+        reset: bool = Query(False, description="If true, delete all existing Code Quality v2 data for the user before seeding."),
+        current_user: dict = Depends(get_current_user),
+    ):
+        """Seed a rich, realistic demo dataset for the current user — for client demos."""
+        return await _seed_demo_for(db, current_user["email"], reset=reset)
+
     return router
+
+
+# ----------------------------- Demo seeder -----------------------------
+def _build_demo_dataset(user_email: str) -> Dict[str, List[Dict[str, Any]]]:
+    """Returns ready-to-insert lists of integrations, scans, and issues for one user.
+
+    Includes one disabled integration so the user can demonstrate the toggle.
+    Includes one scan with a pre-baked AI fix so the user can show the fix flow
+    immediately without burning an LLM call.
+    """
+    now = datetime.now(timezone.utc)
+    def iso(mins_ago: int) -> str:
+        return (now - timedelta(minutes=mins_ago)).isoformat()
+
+    integrations = [
+        {
+            "id": _safe_id(),
+            "user_email": user_email,
+            "name": "SonarQube · Production",
+            "provider": "sonarqube",
+            "base_url": "https://sonar.acme-corp.com",
+            "token": "sq_demo_" + uuid.uuid4().hex[:16],
+            "project_key": "acme-checkout-service",
+            "org": None,
+            "extra": {},
+            "enabled": True,
+            "created_at": iso(60 * 24 * 5),
+            "last_sync_at": iso(15),
+            "last_status": "ok",
+        },
+        {
+            "id": _safe_id(),
+            "user_email": user_email,
+            "name": "Snyk · Security",
+            "provider": "snyk",
+            "base_url": "https://api.snyk.io",
+            "token": "snyk_demo_" + uuid.uuid4().hex[:16],
+            "project_key": "5b8c8f3e-1234-4abc-9def-000000000001",
+            "org": "acme-security",
+            "extra": {},
+            "enabled": True,
+            "created_at": iso(60 * 24 * 3),
+            "last_sync_at": iso(45),
+            "last_status": "ok",
+        },
+        {
+            "id": _safe_id(),
+            "user_email": user_email,
+            "name": "Semgrep Cloud · Staging",
+            "provider": "semgrep",
+            "base_url": "https://semgrep.dev",
+            "token": "semgrep_demo_" + uuid.uuid4().hex[:16],
+            "project_key": "acme-staging",
+            "org": None,
+            "extra": {},
+            "enabled": False,  # disabled — for demoing the toggle
+            "created_at": iso(60 * 24 * 1),
+            "last_sync_at": iso(60 * 12),
+            "last_status": "ok",
+        },
+    ]
+
+    scans: List[Dict[str, Any]] = []
+    issues: List[Dict[str, Any]] = []
+
+    # --- Scan A: GitHub repo, done, RICH issue list, ONE with a pre-baked fix ---
+    scan_a_id = _safe_id()
+    scan_a_issues = [
+        {
+            "rule": "py:hardcoded-secret",
+            "severity": "blocker",
+            "type": "vulnerability",
+            "file": "src/auth/login.py",
+            "line": 14,
+            "message": "Hardcoded password literal used as authentication credential.",
+            "recommendation": "Move the secret to an environment variable or a secrets manager.",
+            "snippet": "PASSWORD = \"sup3r-s3cret-2025\"\nif user_pw == PASSWORD:\n    return True",
+        },
+        {
+            "rule": "py:sql-injection",
+            "severity": "critical",
+            "type": "vulnerability",
+            "file": "src/api/users.py",
+            "line": 87,
+            "message": "User input concatenated directly into SQL — risk of injection.",
+            "recommendation": "Use parameterised queries with placeholders.",
+            "snippet": "cursor.execute(\n    \"SELECT * FROM users WHERE email = '\" + email + \"'\"\n)",
+        },
+        {
+            "rule": "py:dangerous-eval",
+            "severity": "critical",
+            "type": "vulnerability",
+            "file": "src/utils/parser.py",
+            "line": 22,
+            "message": "Use of eval() on untrusted input.",
+            "recommendation": "Replace eval() with ast.literal_eval() or a strict parser.",
+            "snippet": "value = eval(request.json[\"expr\"])",
+        },
+        {
+            "rule": "js:no-unused-vars",
+            "severity": "minor",
+            "type": "code_smell",
+            "file": "frontend/src/components/Cart.jsx",
+            "line": 41,
+            "message": "Unused variable 'discount' declared but never used.",
+            "recommendation": "Remove the variable or prefix with _.",
+            "snippet": "const discount = computeDiscount(items);  // never read",
+        },
+        {
+            "rule": "py:broad-except",
+            "severity": "major",
+            "type": "code_smell",
+            "file": "src/api/orders.py",
+            "line": 156,
+            "message": "Catching bare Exception swallows useful tracebacks.",
+            "recommendation": "Catch the specific exception you expect.",
+            "snippet": "try:\n    process(order)\nexcept Exception:\n    return None",
+        },
+        {
+            "rule": "py:weak-crypto",
+            "severity": "major",
+            "type": "security_hotspot",
+            "file": "src/utils/hashing.py",
+            "line": 9,
+            "message": "MD5 is cryptographically broken — do not use for password hashing.",
+            "recommendation": "Use bcrypt/argon2 with a per-user salt.",
+            "snippet": "import hashlib\nhash = hashlib.md5(password.encode()).hexdigest()",
+        },
+        {
+            "rule": "py:null-deref",
+            "severity": "major",
+            "type": "bug",
+            "file": "src/services/payment.py",
+            "line": 203,
+            "message": "Possible None dereference: `customer.address.city` when address is None.",
+            "recommendation": "Guard with `if customer.address is not None` before access.",
+            "snippet": "city = customer.address.city",
+        },
+        {
+            "rule": "js:react-hook-deps",
+            "severity": "info",
+            "type": "code_smell",
+            "file": "frontend/src/pages/Cart.jsx",
+            "line": 58,
+            "message": "React Hook useEffect has a missing dependency: 'fetchCart'.",
+            "recommendation": "Add fetchCart to the dependency array, or memoise it with useCallback.",
+            "snippet": "useEffect(() => {\n  fetchCart();\n}, []);",
+        },
+    ]
+    scans.append({
+        "id": scan_a_id,
+        "user_email": user_email,
+        "source": "github",
+        "source_label": "acme-corp/checkout-service@main",
+        "meta": {"repo_url": "https://github.com/acme-corp/checkout-service", "branch": "main", "has_token": True},
+        "status": "done",
+        "totals": _compute_totals(scan_a_issues),
+        "created_at": iso(60 * 2),
+        "started_at": iso(60 * 2 - 1),
+        "finished_at": iso(60 * 2 - 4),
+        "error": None,
+        "file_count": 28,
+    })
+    pre_baked_fix = {
+        "explanation": (
+            "The literal password in src/auth/login.py is committed to source control "
+            "and shared by every deployment. Anyone with repo read access (current "
+            "employees, contractors, or an attacker who steals a clone) gets the "
+            "production credential.\n\nFix: read the secret from an environment "
+            "variable, fail fast if it is missing in non-dev, and use a constant-"
+            "time comparison (hmac.compare_digest) so timing side channels do not "
+            "leak the value."
+        ),
+        "patched_file": (
+            "import os\n"
+            "import hmac\n"
+            "from typing import Optional\n\n"
+            "PASSWORD: Optional[str] = os.environ.get(\"APP_LOGIN_PASSWORD\")\n"
+            "if not PASSWORD and os.environ.get(\"APP_ENV\", \"dev\") != \"dev\":\n"
+            "    raise RuntimeError(\"APP_LOGIN_PASSWORD must be set outside dev\")\n\n"
+            "def is_valid_login(user_pw: str) -> bool:\n"
+            "    if PASSWORD is None:\n"
+            "        return False\n"
+            "    return hmac.compare_digest(user_pw, PASSWORD)\n"
+        ),
+        "diff": (
+            "--- a/src/auth/login.py\n"
+            "+++ b/src/auth/login.py\n"
+            "@@ -12,8 +12,14 @@\n"
+            "-PASSWORD = \"sup3r-s3cret-2025\"\n"
+            "+import os, hmac\n"
+            "+PASSWORD = os.environ.get(\"APP_LOGIN_PASSWORD\")\n"
+            "+if not PASSWORD and os.environ.get(\"APP_ENV\", \"dev\") != \"dev\":\n"
+            "+    raise RuntimeError(\"APP_LOGIN_PASSWORD must be set outside dev\")\n"
+            "-if user_pw == PASSWORD:\n"
+            "-    return True\n"
+            "+def is_valid_login(user_pw: str) -> bool:\n"
+            "+    if PASSWORD is None:\n"
+            "+        return False\n"
+            "+    return hmac.compare_digest(user_pw, PASSWORD)\n"
+        ),
+        "test_hint": "Set APP_LOGIN_PASSWORD in your test runner and assert is_valid_login() returns False for any other string.",
+        "generated_at": iso(60 * 2 - 3),
+    }
+    for idx, it in enumerate(scan_a_issues):
+        issues.append({
+            "id": _safe_id(),
+            "scan_id": scan_a_id,
+            "user_email": user_email,
+            "rule": it["rule"],
+            "severity": it["severity"],
+            "type": it["type"],
+            "file": it["file"],
+            "line": it["line"],
+            "message": it["message"],
+            "recommendation": it["recommendation"],
+            "snippet": it["snippet"],
+            "external_id": None,
+            "created_at": iso(60 * 2 - 4),
+            "fix": pre_baked_fix if idx == 0 else None,
+        })
+
+    # --- Scan B: Uploaded .zip, done ---
+    scan_b_id = _safe_id()
+    scan_b_issues = [
+        {
+            "rule": "js:no-console",
+            "severity": "info",
+            "type": "code_smell",
+            "file": "src/utils/logger.js",
+            "line": 4,
+            "message": "console.log left in production build.",
+            "recommendation": "Use a structured logger or strip in build.",
+            "snippet": "console.log(\"DEBUG\", payload);",
+        },
+        {
+            "rule": "ts:any-type",
+            "severity": "minor",
+            "type": "code_smell",
+            "file": "src/api/client.ts",
+            "line": 19,
+            "message": "Function returns `any`, defeating type checking.",
+            "recommendation": "Add an explicit return type.",
+            "snippet": "export function fetchJson(url: string): any { ... }",
+        },
+        {
+            "rule": "js:weak-jwt-verify",
+            "severity": "major",
+            "type": "vulnerability",
+            "file": "src/middleware/auth.js",
+            "line": 31,
+            "message": "JWT verified without checking algorithm whitelist.",
+            "recommendation": "Pass `{ algorithms: ['HS256'] }` to jwt.verify.",
+            "snippet": "jwt.verify(token, secret); // missing algorithms whitelist",
+        },
+    ]
+    scans.append({
+        "id": scan_b_id,
+        "user_email": user_email,
+        "source": "upload",
+        "source_label": "frontend-monorepo.zip",
+        "meta": {"original_name": "frontend-monorepo.zip", "size": 4_812_345},
+        "status": "done",
+        "totals": _compute_totals(scan_b_issues),
+        "created_at": iso(60 * 6),
+        "started_at": iso(60 * 6 - 1),
+        "finished_at": iso(60 * 6 - 3),
+        "error": None,
+        "file_count": 17,
+    })
+    for it in scan_b_issues:
+        issues.append({
+            "id": _safe_id(),
+            "scan_id": scan_b_id,
+            "user_email": user_email,
+            "rule": it["rule"],
+            "severity": it["severity"],
+            "type": it["type"],
+            "file": it["file"],
+            "line": it["line"],
+            "message": it["message"],
+            "recommendation": it["recommendation"],
+            "snippet": it["snippet"],
+            "external_id": None,
+            "created_at": iso(60 * 6 - 3),
+            "fix": None,
+        })
+
+    # --- Scan C: SonarQube integration sync, done ---
+    sonar_integration_id = integrations[0]["id"]
+    scan_c_id = _safe_id()
+    scan_c_issues = [
+        {
+            "rule": "java:S2095",
+            "severity": "major",
+            "type": "bug",
+            "file": "src/main/java/com/acme/checkout/PaymentService.java",
+            "line": 142,
+            "message": "Resources should be closed (FileInputStream not closed in catch path).",
+            "recommendation": "Use try-with-resources to guarantee close.",
+            "snippet": "FileInputStream fis = new FileInputStream(file);\n// ... no close in catch",
+        },
+        {
+            "rule": "java:S1192",
+            "severity": "minor",
+            "type": "code_smell",
+            "file": "src/main/java/com/acme/checkout/OrderController.java",
+            "line": 56,
+            "message": "String literal \"order_id\" duplicated 8 times.",
+            "recommendation": "Extract to a constant.",
+            "snippet": "headers.put(\"order_id\", id);",
+        },
+        {
+            "rule": "java:S2068",
+            "severity": "blocker",
+            "type": "vulnerability",
+            "file": "src/main/java/com/acme/checkout/DbConfig.java",
+            "line": 23,
+            "message": "Hardcoded credentials in source.",
+            "recommendation": "Read from environment / secrets manager.",
+            "snippet": "private static final String DB_PWD = \"acme-prod-2024\";",
+        },
+        {
+            "rule": "java:S5547",
+            "severity": "major",
+            "type": "security_hotspot",
+            "file": "src/main/java/com/acme/checkout/Crypto.java",
+            "line": 11,
+            "message": "DES is a weak cipher.",
+            "recommendation": "Use AES-256-GCM.",
+            "snippet": "Cipher cipher = Cipher.getInstance(\"DES\");",
+        },
+    ]
+    scans.append({
+        "id": scan_c_id,
+        "user_email": user_email,
+        "source": "integration",
+        "source_label": f"sonarqube: {integrations[0]['name']}",
+        "meta": {"integration_id": sonar_integration_id, "provider": "sonarqube"},
+        "status": "done",
+        "totals": _compute_totals(scan_c_issues),
+        "created_at": iso(15),
+        "started_at": iso(15),
+        "finished_at": iso(14),
+        "error": None,
+        "file_count": 0,
+    })
+    for it in scan_c_issues:
+        issues.append({
+            "id": _safe_id(),
+            "scan_id": scan_c_id,
+            "user_email": user_email,
+            "rule": it["rule"],
+            "severity": it["severity"],
+            "type": it["type"],
+            "file": it["file"],
+            "line": it["line"],
+            "message": it["message"],
+            "recommendation": it["recommendation"],
+            "snippet": it["snippet"],
+            "external_id": f"AYM-{uuid.uuid4().hex[:8].upper()}",
+            "created_at": iso(14),
+            "fix": None,
+        })
+
+    # --- Scan D: Snyk integration sync, done ---
+    snyk_integration_id = integrations[1]["id"]
+    scan_d_id = _safe_id()
+    scan_d_issues = [
+        {
+            "rule": "SNYK-JS-LODASH-567746",
+            "severity": "critical",
+            "type": "vulnerability",
+            "file": "package.json",
+            "line": 1,
+            "message": "lodash 4.17.15 — Prototype Pollution (CVE-2020-8203).",
+            "recommendation": "Upgrade lodash to >=4.17.20.",
+            "snippet": "\"lodash\": \"4.17.15\"",
+        },
+        {
+            "rule": "SNYK-PYTHON-DJANGO-1234567",
+            "severity": "major",
+            "type": "vulnerability",
+            "file": "requirements.txt",
+            "line": 3,
+            "message": "Django 3.0.5 — SQL Injection via QuerySet.order_by (CVE-2020-9402).",
+            "recommendation": "Upgrade Django to >=3.0.6.",
+            "snippet": "Django==3.0.5",
+        },
+    ]
+    scans.append({
+        "id": scan_d_id,
+        "user_email": user_email,
+        "source": "integration",
+        "source_label": f"snyk: {integrations[1]['name']}",
+        "meta": {"integration_id": snyk_integration_id, "provider": "snyk"},
+        "status": "done",
+        "totals": _compute_totals(scan_d_issues),
+        "created_at": iso(45),
+        "started_at": iso(45),
+        "finished_at": iso(44),
+        "error": None,
+        "file_count": 0,
+    })
+    for it in scan_d_issues:
+        issues.append({
+            "id": _safe_id(),
+            "scan_id": scan_d_id,
+            "user_email": user_email,
+            "rule": it["rule"],
+            "severity": it["severity"],
+            "type": it["type"],
+            "file": it["file"],
+            "line": it["line"],
+            "message": it["message"],
+            "recommendation": it["recommendation"],
+            "snippet": it["snippet"],
+            "external_id": f"SNYK-{uuid.uuid4().hex[:8]}",
+            "created_at": iso(44),
+            "fix": None,
+        })
+
+    # --- Scan E: Failed GitHub scan (private repo, bad token) ---
+    scans.append({
+        "id": _safe_id(),
+        "user_email": user_email,
+        "source": "github",
+        "source_label": "acme-corp/internal-billing",
+        "meta": {"repo_url": "https://github.com/acme-corp/internal-billing", "branch": None, "has_token": True},
+        "status": "failed",
+        "totals": {"total": 0, "bug": 0, "vulnerability": 0, "code_smell": 0, "security_hotspot": 0},
+        "created_at": iso(8),
+        "started_at": iso(8),
+        "finished_at": iso(8),
+        "error": "git clone failed: remote: Repository not found.",
+        "file_count": 0,
+    })
+
+    return {"integrations": integrations, "scans": scans, "issues": issues}
+
+
+def _compute_totals(issue_dicts: List[Dict[str, Any]]) -> Dict[str, int]:
+    t = {"total": 0, "bug": 0, "vulnerability": 0, "code_smell": 0, "security_hotspot": 0}
+    for it in issue_dicts:
+        t["total"] += 1
+        k = it.get("type", "bug")
+        t[k] = t.get(k, 0) + 1
+    return t
+
+
+async def _seed_demo_for(db, user_email: str, reset: bool = False) -> Dict[str, Any]:
+    if reset:
+        await db.cq_integrations.delete_many({"user_email": user_email})
+        await db.cq_scans.delete_many({"user_email": user_email})
+        await db.cq_issues.delete_many({"user_email": user_email})
+    data = _build_demo_dataset(user_email)
+    if data["integrations"]:
+        await db.cq_integrations.insert_many(data["integrations"])
+    if data["scans"]:
+        await db.cq_scans.insert_many(data["scans"])
+    if data["issues"]:
+        await db.cq_issues.insert_many(data["issues"])
+    return {
+        "ok": True,
+        "reset": reset,
+        "integrations_added": len(data["integrations"]),
+        "scans_added": len(data["scans"]),
+        "issues_added": len(data["issues"]),
+    }

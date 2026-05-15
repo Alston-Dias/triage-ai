@@ -40,8 +40,14 @@ export const cqCreateIntegration = (payload) =>
 export const cqDeleteIntegration = (id) =>
   api.delete(`/code-quality/integrations/${id}`).then((r) => r.data);
 
+export const cqUpdateIntegration = (id, patch) =>
+  api.patch(`/code-quality/integrations/${id}`, patch).then((r) => r.data);
+
 export const cqSyncIntegration = (id) =>
   api.post(`/code-quality/integrations/${id}/sync`).then((r) => r.data);
+
+export const cqSeedDemo = (reset = false) =>
+  api.post('/code-quality/demo/seed', null, { params: { reset } }).then((r) => r.data);
 
 // -------- Issues --------
 export const cqGetIssue = (id) => api.get(`/code-quality/issues/${id}`).then((r) => r.data);

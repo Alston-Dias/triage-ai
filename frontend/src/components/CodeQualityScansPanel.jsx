@@ -18,6 +18,8 @@ import {
   Wand2,
   Eye,
   EyeOff,
+  Power,
+  Database,
 } from 'lucide-react';
 import { Card } from '../components/ui/card';
 import { Badge } from '../components/ui/badge';
@@ -32,8 +34,10 @@ import {
   cqListIntegrations,
   cqCreateIntegration,
   cqDeleteIntegration,
+  cqUpdateIntegration,
   cqSyncIntegration,
   cqGenerateFix,
+  cqSeedDemo,
   SEVERITY_COLORS,
   TYPE_COLORS,
   TYPE_LABEL,
@@ -717,7 +721,7 @@ const IssueDrawer = ({ issue, scan, open, onClose, onFixGenerated }) => {
 // ============================================================================
 // Integrations Panel (list)
 // ============================================================================
-const IntegrationsPanel = ({ integrations, onDeleted, onSyncStarted }) => {
+const IntegrationsPanel = ({ integrations, onDeleted, onSyncStarted, onUpdated }) => {
   const [busyId, setBusyId] = useState(null);
   const remove = async (i) => {
     if (!window.confirm(`Delete integration "${i.name}"?`)) return;
@@ -733,6 +737,10 @@ const IntegrationsPanel = ({ integrations, onDeleted, onSyncStarted }) => {
     }
   };
   const sync = async (i) => {
+    if (i.enabled === false) {
+      toast.error('Integration is disabled. Enable it first to sync.');
+      return;
+    }
     setBusyId(i.id);
     try {
       const scan = await cqSyncIntegration(i.id);
@@ -740,6 +748,19 @@ const IntegrationsPanel = ({ integrations, onDeleted, onSyncStarted }) => {
       onSyncStarted(scan);
     } catch (e) {
       toast.error(e?.response?.data?.detail || 'Sync failed');
+    } finally {
+      setBusyId(null);
+    }
+  };
+  const toggle = async (i) => {
+    const next = !(i.enabled !== false); // default true if undefined
+    setBusyId(i.id);
+    try {
+      const updated = await cqUpdateIntegration(i.id, { enabled: next });
+      toast.success(next ? `${i.name} enabled` : `${i.name} disabled`);
+      onUpdated && onUpdated(updated);
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || 'Toggle failed');
     } finally {
       setBusyId(null);
     }
@@ -762,46 +783,79 @@ const IntegrationsPanel = ({ integrations, onDeleted, onSyncStarted }) => {
           <Plug size={14} className="text-[#D4AF37]" />
           Connected Scanners
         </h3>
-        <span className="text-[11px] text-neutral-500">{integrations.length} active</span>
+        <span className="text-[11px] text-neutral-500">
+          {integrations.filter((i) => i.enabled !== false).length} of {integrations.length} enabled
+        </span>
       </div>
       <div className="space-y-2" data-testid="cq2-integrations-list">
-        {integrations.map((i) => (
-          <div
-            key={i.id}
-            className="flex items-center justify-between p-3 bg-[#0A0A0A] border border-[#1f1f1f] rounded-lg hover:border-[#D4AF37]/30 transition"
-          >
-            <div className="min-w-0">
-              <div className="flex items-center gap-2">
-                <Badge className="bg-neutral-700/30 text-neutral-200 border border-neutral-600/30 text-[10px] uppercase tracking-wider font-semibold">
-                  {PROVIDER_LABEL[i.provider] || i.provider}
-                </Badge>
-                <div className="text-sm text-white font-medium truncate">{i.name}</div>
+        {integrations.map((i) => {
+          const isEnabled = i.enabled !== false;
+          return (
+            <div
+              key={i.id}
+              className={`flex items-center justify-between p-3 bg-[#0A0A0A] border rounded-lg transition ${
+                isEnabled ? 'border-[#1f1f1f] hover:border-[#D4AF37]/30' : 'border-[#1f1f1f] opacity-60'
+              }`}
+              data-testid={`cq2-integ-row-${i.id}`}
+            >
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <Badge className="bg-neutral-700/30 text-neutral-200 border border-neutral-600/30 text-[10px] uppercase tracking-wider font-semibold">
+                    {PROVIDER_LABEL[i.provider] || i.provider}
+                  </Badge>
+                  <div className="text-sm text-white font-medium truncate">{i.name}</div>
+                  {!isEnabled && (
+                    <Badge className="bg-neutral-500/15 text-neutral-300 border border-neutral-500/30 text-[10px] uppercase tracking-wider font-semibold">
+                      disabled
+                    </Badge>
+                  )}
+                </div>
+                <div className="text-[11px] text-neutral-500 mt-0.5 truncate">
+                  {i.base_url} {i.project_key ? `· ${i.project_key}` : ''} {i.last_status ? `· last: ${i.last_status}` : ''}
+                </div>
               </div>
-              <div className="text-[11px] text-neutral-500 mt-0.5 truncate">
-                {i.base_url} {i.project_key ? `· ${i.project_key}` : ''} {i.last_status ? `· last: ${i.last_status}` : ''}
+              <div className="flex items-center gap-2 flex-shrink-0 ml-3">
+                {/* Toggle */}
+                <button
+                  onClick={() => toggle(i)}
+                  disabled={busyId === i.id}
+                  data-testid={`cq2-integ-toggle-${i.id}`}
+                  className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors disabled:opacity-50 ${
+                    isEnabled ? 'bg-emerald-500/70' : 'bg-neutral-700'
+                  }`}
+                  aria-label={isEnabled ? 'Disable integration' : 'Enable integration'}
+                  title={isEnabled ? 'Disable' : 'Enable'}
+                >
+                  <span
+                    className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                      isEnabled ? 'translate-x-4' : 'translate-x-0.5'
+                    }`}
+                  />
+                </button>
+                <button
+                  onClick={() => sync(i)}
+                  disabled={busyId === i.id || !isEnabled}
+                  className="flex items-center gap-1.5 text-[11px] px-2.5 py-1 rounded-md bg-[#D4AF37]/10 hover:bg-[#D4AF37]/20 border border-[#D4AF37]/30 text-[#D4AF37] disabled:opacity-40 disabled:cursor-not-allowed"
+                  data-testid={`cq2-integ-sync-${i.id}`}
+                  title={isEnabled ? 'Sync now' : 'Enable to sync'}
+                >
+                  {busyId === i.id ? <Loader2 size={11} className="animate-spin" /> : <RefreshCw size={11} />}
+                  Sync
+                </button>
+                <button
+                  onClick={() => remove(i)}
+                  disabled={busyId === i.id}
+                  className="text-neutral-500 hover:text-red-400 disabled:opacity-50 p-1"
+                  aria-label="Delete integration"
+                  data-testid={`cq2-integ-delete-${i.id}`}
+                  title="Delete integration"
+                >
+                  <Trash2 size={14} />
+                </button>
               </div>
             </div>
-            <div className="flex items-center gap-2 flex-shrink-0">
-              <button
-                onClick={() => sync(i)}
-                disabled={busyId === i.id}
-                className="flex items-center gap-1.5 text-[11px] px-2.5 py-1 rounded-md bg-[#D4AF37]/10 hover:bg-[#D4AF37]/20 border border-[#D4AF37]/30 text-[#D4AF37] disabled:opacity-50"
-                data-testid={`cq2-integ-sync-${i.id}`}
-              >
-                {busyId === i.id ? <Loader2 size={11} className="animate-spin" /> : <RefreshCw size={11} />}
-                Sync
-              </button>
-              <button
-                onClick={() => remove(i)}
-                disabled={busyId === i.id}
-                className="text-neutral-500 hover:text-red-400 disabled:opacity-50"
-                aria-label="Delete"
-              >
-                <Trash2 size={14} />
-              </button>
-            </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
     </Card>
   );
@@ -854,6 +908,7 @@ export default function CodeQualityScansPanel() {
   const [activeIssue, setActiveIssue] = useState(null);
   const [showNewModal, setShowNewModal] = useState(false);
   const [loadingList, setLoadingList] = useState(true);
+  const [seedBusy, setSeedBusy] = useState(false);
 
   const refreshAll = useCallback(async () => {
     try {
@@ -935,6 +990,20 @@ export default function CodeQualityScansPanel() {
 
   const openScan = useMemo(() => scans.find((s) => s.id === openScanId) || null, [scans, openScanId]);
 
+  const loadDemo = async (reset) => {
+    if (reset && !window.confirm('This will DELETE all your current Code Quality scans, issues and integrations, then load fresh demo data. Continue?')) return;
+    setSeedBusy(true);
+    try {
+      const res = await cqSeedDemo(reset);
+      toast.success(`Demo loaded: ${res.scans_added} scans, ${res.issues_added} issues, ${res.integrations_added} integrations`);
+      await refreshAll();
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || 'Failed to load demo data');
+    } finally {
+      setSeedBusy(false);
+    }
+  };
+
   return (
     <div className="space-y-6">
       {/* Header */}
@@ -950,6 +1019,16 @@ export default function CodeQualityScansPanel() {
             </p>
           </div>
           <div className="flex items-center gap-2">
+            <button
+              onClick={() => loadDemo(scans.length > 0 || integrations.length > 0)}
+              disabled={seedBusy}
+              data-testid="cq2-seed-demo-btn"
+              className="flex items-center gap-2 px-3 py-2 bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/30 rounded-md text-xs text-emerald-300 disabled:opacity-50"
+              title="Load realistic demo data for client presentations"
+            >
+              {seedBusy ? <Loader2 size={12} className="animate-spin" /> : <Database size={12} />}
+              Load Demo Data
+            </button>
             <button
               onClick={refreshAll}
               className="flex items-center gap-2 px-3 py-2 bg-[#161616] hover:bg-[#1f1f1f] border border-[#1f1f1f] rounded-md text-xs text-neutral-300"
@@ -973,6 +1052,9 @@ export default function CodeQualityScansPanel() {
       <IntegrationsPanel
         integrations={integrations}
         onDeleted={(id) => setIntegrations((prev) => prev.filter((x) => x.id !== id))}
+        onUpdated={(updated) =>
+          setIntegrations((prev) => prev.map((x) => (x.id === updated.id ? { ...x, ...updated } : x)))
+        }
         onSyncStarted={(scan) => {
           setScans((prev) => [scan, ...prev]);
           setOpenScanId(scan.id);
