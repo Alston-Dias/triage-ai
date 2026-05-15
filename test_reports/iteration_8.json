@@ -1,0 +1,40 @@
+{
+  "summary": "Post-merge regression of PR #4 (F-02 Predictive Triage + SonarQube/AI Chat). Backend: 27/27 pytest tests PASS in /app/backend/tests/test_post_merge_pr4.py covering: auth login + protected routes, pre-existing routes (alerts/incidents/sources/analytics), predictive (services summary=5 with all 5 expected services, list-incidents with PRD- prefix, run /predictive-triage, /trend?points=60, acknowledge+resolve transitions, WebSocket snapshot), and sonarqube (summary, 4 issues w/ buckets+breakdown+technical_debt_minutes+severityBreakdown, detail, claim->IN_PROGRESS+assignee, assign, status transitions OPEN/IN_PROGRESS/FIXED/WONT_FIX, quality-gate, generate-fix w/ confidence+explanation+diff, list+post comments persisted, AI chat with all 5 intents). Frontend (Playwright on preview URL): Unauthenticated /code-quality and /predictive both correctly redirect to /login. After admin login the sidebar shows all 6 nav items (Live Triage, Incidents, Predictive, Analytics, Code Quality, Settings). Predictive page renders 5 service risk cards (payments-api/auth-service/checkout-svc/search-api/notifications-worker), Predicted failures list, Metric trend chart, Preventive Recommendation (claude-sonnet-4.5), Prevention timeline, and Acknowledge/Resolve buttons. Code Quality page renders PASSED quality-gate badge, severity strip (Blockers/High/Medium/Low + 50min tech debt + MOCK badge + 7d sparkline), all 6 metric cards (Bugs, Vulnerabilities, Code Smells, Coverage 78.5%, Duplications 2.1%, Lines 5,847), search + 4 filter dropdowns, and 4 issue rows. Clicking issue AYxyz123 opens IssueDetailSheet with all expected sections (bucket badges, file path, rule javascript:S3358, description, suggested fix code block, Claim, Assign, status pills OPEN/CLAIMED/IN_PROGRESS/FIXED/WONT_FIX, Generate AI Fix). AI Remediation Copilot panel opens via toggle and shows all 5 quick-intent chips (Explain Rule, Generate Fix, Alternative Fix, Write Test, PR Description). Both features coexist cleanly after the merge. No console errors during the flow (only a benign WebSocket-closed-on-nav warning and Radix DialogContent aria-describedby a11y warning).",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "/api/sonarqube/summary, /api/sonarqube/issues, /api/sonarqube/quality-gate", "issue": "These endpoints return 200 without an Authorization Bearer token, while /api/sonarqube/issues/{key} and predictive endpoints DO require auth. The auth enforcement is inconsistent across the SonarQube router. Likely intentional (read-only dashboard exposure for the mocked feature) but should be confirmed or hardened."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "IssueDetailSheet / FixPreviewModal", "issues": ["Radix DialogContent missing Description or aria-describedby — accessibility warning in console (non-blocking)."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_post_merge_pr4.py",
+    "/app/test_reports/pytest/iter8_post_merge.xml"
+  ],
+  "action_items": [
+    "(Low priority) Decide whether /api/sonarqube/summary, /api/sonarqube/issues, /api/sonarqube/quality-gate should require Bearer auth like the rest of the SonarQube router; the inconsistency is currently exploitable to read mock metrics without login.",
+    "(Low priority) Add aria-describedby (or Radix DialogDescription) to the IssueDetailSheet and FixPreviewModal DialogContents to silence the a11y console warning."
+  ],
+  "critical_code_review_comments": [
+    "Auth enforcement is inconsistent across /api/sonarqube/*: list/summary/quality-gate are public while detail/claim/assign/status/comments/chat/generate-fix are protected. Either lock everything down behind require_auth or document the read-only public surface explicitly.",
+    "server.py is now 3314 lines after the merge — predictive (~600 lines) and sonarqube (~900 lines) blocks live alongside the original triage code. Strongly recommend splitting into routers (routers/predictive.py, routers/sonarqube.py) for maintainability.",
+    "_SQ_ISSUE_STATE remains an in-process dict (carry-over from iter6) — resets on backend restart. Acceptable for mock but flagged for future productionisation.",
+    "WebSocket /api/ws/predictive-alerts authenticates via ?token=... query param. This is fine for browsers (cookies/headers can't be sent on WS handshake) but means tokens may land in proxy logs — consider short-lived WS-specific tokens.",
+    "data-testid coverage is excellent on both Predictive and Code Quality pages (issue-row-{key}, issue-detail-sheet, issue-ai-toggle, issue-ai-intent-{5}, etc.). Predictive service cards could expose service-risk-card-{name} testids for finer assertions (currently selected by visible card content).",
+    "POST /api/sonarqube/issues/{key}/chat returns the full {user_message, assistant_message} structure with role/text/user_email/timestamp — clean schema."
+  ],
+  "updated_files": ["/app/backend/tests/test_post_merge_pr4.py"],
+  "success_rate": {"backend": "100% (27/27)", "frontend": "100% (all critical post-merge flows verified)"},
+  "test_credentials": "admin@triage.ai / admin123 (works). /app/memory/test_credentials.md is currently a placeholder header only — main agent should populate it with the seeded users: admin@triage.ai/admin123, sre1@triage.ai/sre123, sre2@triage.ai/sre123, viewer@triage.ai/viewer123.",
+  "seed_data_creation": "POST /api/seed was not re-invoked. SonarQube state was lightly mutated by tests (status transitions on AYxyz123/124/125, one TEST_post_merge_comment, several chat messages) — all non-destructive, resets on backend restart or PATCH status=OPEN.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Single regression suite at /app/backend/tests/test_post_merge_pr4.py now covers BOTH features (predictive + sonarqube) in 27 tests. Run with: pytest /app/backend/tests/test_post_merge_pr4.py -v --junitxml=/app/test_reports/pytest/iterN.xml. Key API shape gotchas: predictive uses service_name (not service); WS emits {event:'snapshot', data:[...]}; chat POST body uses {text, intent}; chat response is {user_message, assistant_message} each with .text. SonarQube list/summary/quality-gate endpoints are currently public — confirm with main agent before tightening test_sonar_detail_requires_auth coverage.",
+  "rca of the issue": "N/A — no regressions detected from PR #4 merge. Both F-02 Predictive Triage and SonarQube AI Chat features fully functional and coexisting. The auth inconsistency on read-only SonarQube routes is a pre-existing minor finding, not introduced by this merge."
+}

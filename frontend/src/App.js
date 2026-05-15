@@ -12,6 +12,7 @@ import IncidentDetail from './pages/IncidentDetail';
 import Analytics from './pages/Analytics';
 import Settings from './pages/Settings';
 import PredictiveDashboard from './components/predictive/PredictiveDashboard';
+import CodeQuality from './pages/CodeQuality';
 
 function App() {
   return (
@@ -30,6 +31,7 @@ function App() {
                       <Route path="/incidents/:id" element={<IncidentDetail />} />
                       <Route path="/predictive" element={<PredictiveDashboard />} />
                       <Route path="/analytics" element={<Analytics />} />
+                      <Route path="/code-quality" element={<CodeQuality />} />
                       <Route path="/settings" element={<Settings />} />
                     </Routes>
                   </Layout>

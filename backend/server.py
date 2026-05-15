@@ -2398,6 +2398,905 @@ async def f02_startup():
 # ====================================================================================================
 
 
+# ====================================================================================================
+# SonarQube Integration - Code Quality Metrics
+# ====================================================================================================
+# Mock SonarQube endpoints for code quality analysis
+# To connect to real SonarQube: Set SONARQUBE_URL and SONAR_TOKEN in .env
+# ====================================================================================================
+
+SONAR_ALLOWED_STATUSES = ["OPEN", "CLAIMED", "IN_PROGRESS", "FIXED", "WONT_FIX"]
+# Severity → simplified bucket (mirrors frontend lib/severity.js)
+SONAR_SEVERITY_BUCKET = {
+    "BLOCKER":  "HIGH",
+    "CRITICAL": "HIGH",
+    "MAJOR":    "MEDIUM",
+    "MINOR":    "LOW",
+    "INFO":     "LOW",
+}
+
+# In-memory mutable state for mocked SonarQube issues (assignee + status overrides).
+# Keyed by issue key. Resets on backend restart — sufficient for the mock workflow.
+_SQ_ISSUE_STATE: dict = {}
+
+
+def _create_mock_sonarqube_issues():
+    """Helper function to create mock SonarQube issue data."""
+    return [
+        {
+            "key": "AYxyz123",
+            "type": "CODE_SMELL",
+            "severity": "MINOR",
+            "component": "frontend/src/components/IncidentChat.jsx",
+            "line": 45,
+            "message": "Consider extracting this conditional into a separate function",
+            "title": "Refactor nested conditional in IncidentChat",
+            "description": (
+                "The render branch at line 45 contains a deeply nested ternary that mixes "
+                "loading, error and empty states. Extract the branching into a small helper "
+                "component or function to improve readability and lower cognitive complexity."
+            ),
+            "rule": "javascript:S3358 — Ternary operators should not be nested",
+            "suggestedFix": (
+                "Replace the nested ternary with an early-return helper, e.g.\n"
+                "function renderBody(state) {\n"
+                "  if (state.loading) return <Spinner />;\n"
+                "  if (state.error)   return <ErrorBanner msg={state.error} />;\n"
+                "  if (!state.items.length) return <EmptyState />;\n"
+                "  return <MessageList items={state.items} />;\n"
+                "}"
+            ),
+            "effort": "10min",
+            "status": "OPEN",
+            "assignee": None,
+            "creationDate": "2025-07-15T09:20:00+0000",
+            "tags": ["complexity"],
+        },
+        {
+            "key": "AYxyz124",
+            "type": "CODE_SMELL",
+            "severity": "MINOR",
+            "component": "backend/server.py",
+            "line": 892,
+            "message": "Function has too many return statements (6 > 5)",
+            "title": "Reduce return statements in resolve_alerts",
+            "description": (
+                "`resolve_alerts` has 6 explicit return paths which makes the control flow "
+                "hard to reason about. Consolidate the validation branches at the top and "
+                "have a single happy-path return at the end."
+            ),
+            "rule": "python:S1142 — Functions should not contain too many return statements",
+            "suggestedFix": (
+                "Collect validation errors first and raise once, then return a single response.\n"
+                "Example: build an `errors = []` list, raise HTTPException(400, errors) if any, "
+                "and return the result dict at the end."
+            ),
+            "effort": "15min",
+            "status": "OPEN",
+            "assignee": None,
+            "creationDate": "2025-07-15T09:20:00+0000",
+            "tags": ["complexity"],
+        },
+        {
+            "key": "AYxyz125",
+            "type": "CODE_SMELL",
+            "severity": "INFO",
+            "component": "frontend/src/components/TriagePanel.jsx",
+            "line": 128,
+            "message": "Consider using a more descriptive variable name",
+            "title": "Rename ambiguous variable `d` in TriagePanel",
+            "description": (
+                "Single-letter variable `d` at line 128 obscures intent. Use a descriptive "
+                "name such as `deployment` or `diagnostic` to make the code self-documenting."
+            ),
+            "rule": "javascript:S117 — Local variables should comply with a naming convention",
+            "suggestedFix": "Rename `d` → `deployment` throughout the function scope.",
+            "effort": "5min",
+            "status": "OPEN",
+            "assignee": None,
+            "creationDate": "2025-07-15T09:20:00+0000",
+            "tags": ["convention"],
+        },
+        {
+            "key": "AYxyz126",
+            "type": "BUG",
+            "severity": "MAJOR",
+            "component": "backend/server.py",
+            "line": 456,
+            "message": "Null pointer dereference may occur here",
+            "title": "Potential None dereference on incident.assignee",
+            "description": (
+                "`incident.assignee` is read without a None check after a Mongo lookup that "
+                "may return a document missing the `assignee` key (e.g. freshly created "
+                "incidents). Accessing `.lower()` on None will raise AttributeError at runtime."
+            ),
+            "rule": "python:S5713 — Null pointers should not be dereferenced",
+            "suggestedFix": (
+                "Guard the access:\n"
+                "assignee = (incident.get('assignee') or '').lower()\n"
+                "if not assignee:\n"
+                "    raise HTTPException(409, 'Incident is unassigned')"
+            ),
+            "effort": "20min",
+            "status": "OPEN",
+            "assignee": None,
+            "creationDate": "2025-07-14T15:30:00+0000",
+            "tags": ["bug"],
+        },
+    ]
+
+
+def _apply_sq_state(issue: dict) -> dict:
+    """Merge in-memory mutable state (assignee/status) onto a base mock issue."""
+    state = _SQ_ISSUE_STATE.get(issue["key"])
+    if state:
+        return {**issue, **state}
+    return issue
+
+
+def _get_sq_issue_or_404(issue_key: str) -> dict:
+    for base in _create_mock_sonarqube_issues():
+        if base["key"] == issue_key:
+            return _apply_sq_state(base)
+    raise HTTPException(404, f"SonarQube issue '{issue_key}' not found")
+
+
+def _create_sonarqube_breakdown():
+    """Helper function to create issues breakdown"""
+    return {
+        "breakdown": {
+            "bugs": 1,
+            "vulnerabilities": 0,
+            "codeSmells": 3,
+            "securityHotspots": 0
+        },
+        "severityBreakdown": {
+            "BLOCKER": 0,
+            "CRITICAL": 0,
+            "MAJOR": 1,
+            "MINOR": 2,
+            "INFO": 1
+        }
+    }
+
+
+@api_router.get("/sonarqube/summary")
+async def get_sonarqube_summary():
+    """
+    Get SonarQube project summary with overall metrics
+    Returns code quality metrics for TriageAI codebase
+    """
+    return {
+        "projectKey": "triageai",
+        "projectName": "TriageAI Platform",
+        "version": "2.0.0",
+        "analysisDate": datetime.now(timezone.utc).isoformat(),
+        "metrics": {
+            "bugs": {
+                "value": 1,
+                "rating": "A"
+            },
+            "vulnerabilities": {
+                "value": 0,
+                "rating": "A"
+            },
+            "codeSmells": {
+                "value": 3,
+                "rating": "A"
+            },
+            "coverage": {
+                "value": 78.5,
+                "percentage": "78.5%"
+            },
+            "duplications": {
+                "value": 2.1,
+                "percentage": "2.1%"
+            },
+            "lines": {
+                "value": 5847,
+                "linesOfCode": 5847
+            },
+            "sqaleRating": {
+                "value": "A",
+                "debtRatio": 0.5
+            },
+            "reliabilityRating": "A",
+            "securityRating": "A",
+            "securityHotspots": 0
+        },
+        "qualityGateStatus": "PASSED"
+    }
+
+
+@api_router.get("/sonarqube/issues")
+async def get_sonarqube_issues(
+    severity: Optional[str] = None,   # exact: BLOCKER/CRITICAL/MAJOR/MINOR/INFO
+    bucket: Optional[str] = None,     # simplified: HIGH/MEDIUM/LOW
+    type: Optional[str] = Query(None, alias="type"),  # BUG/VULNERABILITY/CODE_SMELL/SECURITY_HOTSPOT
+    status: Optional[str] = None,     # OPEN/CLAIMED/IN_PROGRESS/FIXED/WONT_FIX
+    assignee: Optional[str] = None,   # "unassigned" or an email
+    q: Optional[str] = None,          # free-text search across title/message/component/rule
+):
+    """
+    Get SonarQube code-quality issues with optional filters.
+
+    All filter args are optional and combine with AND. The response also includes a
+    breakdown (by type + severity bucket) and total technical-debt minutes so the
+    dashboard can render the summary bar in a single round-trip.
+    """
+    base = [_apply_sq_state(i) for i in _create_mock_sonarqube_issues()]
+
+    def keep(it: dict) -> bool:
+        if severity and (it.get("severity") or "").upper() != severity.upper():
+            return False
+        if bucket:
+            b = SONAR_SEVERITY_BUCKET.get((it.get("severity") or "").upper(), "LOW")
+            if b != bucket.upper():
+                return False
+        if type and (it.get("type") or "").upper() != type.upper():
+            return False
+        if status and (it.get("status") or "").upper() != status.upper():
+            return False
+        if assignee:
+            a = (it.get("assignee") or "").lower()
+            if assignee.lower() == "unassigned":
+                if a:
+                    return False
+            elif a != assignee.lower():
+                return False
+        if q:
+            needle = q.lower()
+            hay = " ".join([
+                str(it.get("title") or ""),
+                str(it.get("message") or ""),
+                str(it.get("component") or ""),
+                str(it.get("rule") or ""),
+                str(it.get("description") or ""),
+            ]).lower()
+            if needle not in hay:
+                return False
+        return True
+
+    filtered = [it for it in base if keep(it)]
+
+    # Breakdown is computed on the *unfiltered* base so the dashboard summary
+    # always reflects the whole project, independent of active filters.
+    breakdown_data = _create_sonarqube_breakdown()
+    total_debt_minutes = sum(_parse_effort_minutes(i.get("effort")) for i in base)
+
+    # Per-bucket counts (BLOCKER is special-cased and surfaced separately).
+    bucket_counts = {"BLOCKER": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0}
+    for it in base:
+        sev = (it.get("severity") or "").upper()
+        if sev == "BLOCKER":
+            bucket_counts["BLOCKER"] += 1
+        elif sev == "CRITICAL":
+            bucket_counts["HIGH"] += 1
+        elif sev == "MAJOR":
+            bucket_counts["MEDIUM"] += 1
+        else:  # MINOR / INFO
+            bucket_counts["LOW"] += 1
+
+    return {
+        "total": len(filtered),
+        "total_unfiltered": len(base),
+        "issues": filtered,
+        "buckets": bucket_counts,
+        "technical_debt_minutes": total_debt_minutes,
+        **breakdown_data,
+    }
+
+
+@api_router.get("/sonarqube/issues/{issue_key}")
+async def get_sonarqube_issue_detail(
+    issue_key: str,
+    current_user: dict = Depends(get_current_user),
+):
+    """Return full detail for a single SonarQube issue (with current assignment/status)."""
+    return _get_sq_issue_or_404(issue_key)
+
+
+class SonarAssignBody(BaseModel):
+    email: str
+
+
+class SonarStatusBody(BaseModel):
+    status: str
+
+
+@api_router.post("/sonarqube/issues/{issue_key}/claim")
+async def claim_sonarqube_issue(
+    issue_key: str,
+    current_user: dict = Depends(get_current_user),
+):
+    """Current user claims the issue → assignee = self, status = CLAIMED."""
+    _get_sq_issue_or_404(issue_key)  # validates existence
+    _SQ_ISSUE_STATE.setdefault(issue_key, {})
+    _SQ_ISSUE_STATE[issue_key]["assignee"] = current_user["email"]
+    _SQ_ISSUE_STATE[issue_key]["status"] = "CLAIMED"
+    return _get_sq_issue_or_404(issue_key)
+
+
+@api_router.post("/sonarqube/issues/{issue_key}/assign")
+async def assign_sonarqube_issue(
+    issue_key: str,
+    body: SonarAssignBody,
+    current_user: dict = Depends(get_current_user),
+):
+    """Assign issue to another user by email."""
+    _get_sq_issue_or_404(issue_key)
+    target = await db.users.find_one({"email": body.email}, {"_id": 0, "password_hash": 0})
+    if not target:
+        raise HTTPException(404, f"User '{body.email}' not found")
+    _SQ_ISSUE_STATE.setdefault(issue_key, {})
+    _SQ_ISSUE_STATE[issue_key]["assignee"] = body.email
+    # If issue is still OPEN, bump it to CLAIMED on assignment.
+    if _get_sq_issue_or_404(issue_key).get("status") == "OPEN":
+        _SQ_ISSUE_STATE[issue_key]["status"] = "CLAIMED"
+    return _get_sq_issue_or_404(issue_key)
+
+
+@api_router.patch("/sonarqube/issues/{issue_key}/status")
+async def update_sonarqube_issue_status(
+    issue_key: str,
+    body: SonarStatusBody,
+    current_user: dict = Depends(get_current_user),
+):
+    """Update issue status. Allowed: OPEN, CLAIMED, IN_PROGRESS, FIXED."""
+    new_status = body.status.upper().strip()
+    if new_status not in SONAR_ALLOWED_STATUSES:
+        raise HTTPException(
+            400,
+            f"Invalid status '{body.status}'. Allowed: {', '.join(SONAR_ALLOWED_STATUSES)}",
+        )
+    _get_sq_issue_or_404(issue_key)
+    _SQ_ISSUE_STATE.setdefault(issue_key, {})
+    _SQ_ISSUE_STATE[issue_key]["status"] = new_status
+    # Resetting to OPEN clears assignee for clarity.
+    if new_status == "OPEN":
+        _SQ_ISSUE_STATE[issue_key]["assignee"] = None
+    return _get_sq_issue_or_404(issue_key)
+
+
+@api_router.get("/sonarqube/quality-gate")
+async def get_sonarqube_quality_gate():
+    """
+    Get SonarQube quality gate status with conditions
+    Returns quality gate evaluation for TriageAI
+    """
+    return {
+        "projectKey": "triageai",
+        "qualityGate": {
+            "name": "TriageAI Quality Standards",
+            "status": "PASSED"
+        },
+        "conditions": [
+            {
+                "metric": "new_reliability_rating",
+                "operator": "GREATER_THAN",
+                "threshold": "1",
+                "status": "PASSED",
+                "actualValue": "1.0"
+            },
+            {
+                "metric": "new_security_rating",
+                "operator": "GREATER_THAN",
+                "threshold": "1",
+                "status": "PASSED",
+                "actualValue": "1.0"
+            },
+            {
+                "metric": "new_maintainability_rating",
+                "operator": "GREATER_THAN",
+                "threshold": "1",
+                "status": "PASSED",
+                "actualValue": "1.0"
+            },
+            {
+                "metric": "new_coverage",
+                "operator": "LESS_THAN",
+                "threshold": "70",
+                "status": "PASSED",
+                "actualValue": "78.5"
+            },
+            {
+                "metric": "new_duplicated_lines_density",
+                "operator": "GREATER_THAN",
+                "threshold": "3",
+                "status": "PASSED",
+                "actualValue": "2.1"
+            }
+        ],
+        "analysisDate": datetime.now(timezone.utc).isoformat()
+    }
+
+
+# ----------------------------------------------------------------------------------------------------
+# F-02 — Helpers & extra endpoints for the enhanced Code Quality dashboard.
+# ----------------------------------------------------------------------------------------------------
+
+_EFFORT_RE = re.compile(r"(\d+)\s*([hm])", re.IGNORECASE)
+
+
+def _parse_effort_minutes(effort: Optional[str]) -> int:
+    """Turn '10min' / '1h' / '1h 30min' into total minutes. Returns 0 on parse failure."""
+    if not effort:
+        return 0
+    total = 0
+    for num, unit in _EFFORT_RE.findall(effort):
+        n = int(num)
+        total += n * 60 if unit.lower() == "h" else n
+    return total
+
+
+class SonarCommentIn(BaseModel):
+    text: str
+
+
+def _generate_mock_sonar_fix(issue: dict) -> dict:
+    """
+    Build a deterministic, synthetic unified-diff "fix" for a Sonar issue.
+
+    This is a pure mock: we synthesize a plausible diff from `issue.suggestedFix`
+    and the file/line that Sonar reported. The function returns the contract
+    {explanation, unified_diff, confidence, safe_to_apply, language} so the
+    frontend FixPreview modal can render side-by-side, and so a real LLM-backed
+    implementation can later replace this body without changing the API shape.
+    """
+    component = issue.get("component", "path/to/file")
+    line = int(issue.get("line") or 1)
+    rule = issue.get("rule", "unknown")
+    severity = (issue.get("severity") or "").upper()
+    itype = (issue.get("type") or "CODE_SMELL").upper()
+    suggested = (issue.get("suggestedFix") or "").rstrip()
+    description = (issue.get("description") or issue.get("message") or "").strip()
+
+    # Language inference for syntax-coloring hints on the frontend.
+    ext = component.rsplit(".", 1)[-1].lower() if "." in component else ""
+    lang = {
+        "py": "python", "js": "javascript", "jsx": "javascript",
+        "ts": "typescript", "tsx": "typescript", "java": "java",
+        "go": "go", "rs": "rust", "rb": "ruby",
+    }.get(ext, "text")
+
+    # Confidence model: presence of a Sonar suggestedFix is the strongest signal,
+    # then the issue type, then severity. Bounded to [0.30, 0.92].
+    base = 0.55
+    if suggested:
+        base += 0.25
+    if itype == "CODE_SMELL":
+        base += 0.10
+    elif itype == "BUG":
+        base += 0.05
+    elif itype == "VULNERABILITY":
+        base -= 0.05
+    if severity in ("BLOCKER", "CRITICAL"):
+        base -= 0.05
+    confidence = max(0.30, min(0.92, round(base, 2)))
+
+    # `safe_to_apply` gates the one-click Apply CTA on the FE. We err conservative:
+    # never auto-mark security findings safe.
+    safe_to_apply = confidence >= 0.70 and itype not in ("VULNERABILITY", "SECURITY_HOTSPOT")
+
+    # Synthesize a unified diff. We don't have the original source, so we use a
+    # short placeholder "before" block and the suggestedFix as the "after" block.
+    before_lines = (description.splitlines() or ["// existing implementation"])[:3]
+    after_lines = suggested.splitlines() or ["// (no prebuilt fix available — see explanation)"]
+    hunk_start = max(1, line - 1)
+    hunk_len_before = len(before_lines)
+    hunk_len_after = len(after_lines)
+
+    diff_lines = [
+        f"--- a/{component}",
+        f"+++ b/{component}",
+        f"@@ -{hunk_start},{hunk_len_before} +{hunk_start},{hunk_len_after} @@",
+    ]
+    for bl in before_lines:
+        diff_lines.append(f"-{bl}")
+    for al in after_lines:
+        diff_lines.append(f"+{al}")
+    unified_diff = "\n".join(diff_lines)
+
+    explanation = (
+        f"**Why this fix?**\n\n"
+        f"`{rule}` flagged `{component}:{line}` as a {itype.replace('_', ' ').lower()} "
+        f"({severity.lower() or 'unranked'} severity). "
+        f"The recommended change applies SonarQube's prebuilt remediation to "
+        f"eliminate the rule violation with minimal blast radius.\n\n"
+        f"**What the patch does**\n"
+        f"- Replaces the flagged block at line {line} with the suggested implementation.\n"
+        f"- Preserves surrounding behaviour and exported API.\n"
+        f"- Mirrors patterns used elsewhere in the codebase.\n\n"
+        f"**Before merging**\n"
+        f"1. Run unit tests covering `{component.split('/')[-1]}`.\n"
+        f"2. Re-run SonarQube analysis to confirm `{rule}` is cleared.\n"
+        f"3. Add a regression test if this is a BUG-class finding."
+    )
+
+    return {
+        "explanation": explanation,
+        "unified_diff": unified_diff,
+        "confidence": confidence,
+        "safe_to_apply": safe_to_apply,
+        "language": lang,
+        "issue_key": issue.get("key"),
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "source": "mock",  # swap to "claude" / "gpt" when wired to real LLM
+    }
+
+
+@api_router.post("/sonarqube/issues/{issue_key}/generate-fix")
+async def generate_sonar_fix(
+    issue_key: str,
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    Generate an AI-assisted fix proposal for a Sonar issue.
+
+    Returns a contract designed for the FixPreview modal:
+        { explanation, unified_diff, confidence (0..1), safe_to_apply, language }
+
+    Implementation is currently mocked deterministically from `issue.suggestedFix`;
+    the `source` field is set to "mock" so the UI can flag it. Swap the body of
+    `_generate_mock_sonar_fix` to an LlmChat call to upgrade to a real model.
+    """
+    issue = _get_sq_issue_or_404(issue_key)
+    return _generate_mock_sonar_fix(issue)
+
+
+@api_router.get("/sonarqube/issues/{issue_key}/comments")
+async def list_sonar_comments(
+    issue_key: str,
+    current_user: dict = Depends(get_current_user),
+):
+    """List comments on a SonarQube issue, oldest first."""
+    _get_sq_issue_or_404(issue_key)  # 404 if unknown
+    docs = await db.sonarqube_comments.find(
+        {"issue_key": issue_key}, {"_id": 0}
+    ).sort("created_at", 1).to_list(500)
+    return {"issue_key": issue_key, "comments": docs}
+
+
+@api_router.post("/sonarqube/issues/{issue_key}/comments")
+async def add_sonar_comment(
+    issue_key: str,
+    body: SonarCommentIn,
+    current_user: dict = Depends(get_current_user),
+):
+    """Append a comment to a SonarQube issue."""
+    text = (body.text or "").strip()
+    if not text:
+        raise HTTPException(400, "text must not be empty")
+    _get_sq_issue_or_404(issue_key)
+
+    doc = {
+        "id": str(uuid.uuid4()),
+        "issue_key": issue_key,
+        "author_email": current_user["email"],
+        "author_name": current_user.get("name") or current_user["email"],
+        "text": text,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.sonarqube_comments.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+
+@api_router.get("/sonarqube/trend")
+async def get_sonarqube_trend(days: int = Query(7, ge=1, le=30)):
+    """
+    Return a daily trend series for the project's main quality counters, for the
+    requested number of days (default 7). Pure deterministic mock so the dashboard
+    sparkline has stable, plausible data across reloads.
+    """
+    # Seed by date so the curve is stable per-day.
+    today = datetime.now(timezone.utc).date()
+    bugs_base, vuln_base, smells_base = 1, 0, 3
+    series = []
+    for i in range(days - 1, -1, -1):
+        d = today - timedelta(days=i)
+        seed = sum(ord(c) for c in d.isoformat()) % 7
+        series.append({
+            "date": d.isoformat(),
+            "bugs": max(0, bugs_base + (seed % 3) - 1),
+            "vulnerabilities": max(0, vuln_base + (seed % 2)),
+            "code_smells": max(0, smells_base + ((seed * 3) % 4) - 1),
+            "total": 0,  # filled below
+        })
+    for row in series:
+        row["total"] = row["bugs"] + row["vulnerabilities"] + row["code_smells"]
+    return {"days": days, "series": series}
+
+
+@api_router.get("/sonarqube/config")
+async def get_sonarqube_config(current_user: dict = Depends(get_current_user)):
+    """
+    Report whether the backend is wired to a real SonarQube server or running on
+    mocks. The frontend uses this to render a small badge on the dashboard.
+
+    To go live, set SONAR_BASE_URL (and optionally SONAR_TOKEN, SONAR_PROJECT_KEY)
+    in backend/.env — the data layer can then branch on `source == "live"`.
+    """
+    base_url = os.environ.get("SONAR_BASE_URL", "").strip()
+    project_key = os.environ.get("SONAR_PROJECT_KEY", "triageai").strip() or "triageai"
+    has_token = bool(os.environ.get("SONAR_TOKEN", "").strip())
+    return {
+        "source": "live" if base_url and has_token else "mock",
+        "base_url": base_url or None,
+        "project_key": project_key,
+        "has_token": has_token,
+    }
+
+
+# ====================================================================================================
+# END SonarQube Integration
+# ====================================================================================================
+
+
+# ====================================================================================================
+# SonarQube AI Remediation Assistant (Mocked)
+# ----------------------------------------------------------------------------------------------------
+# Architecture: keep the response generator (`_mock_sonar_ai_reply`) isolated behind a single
+# async function so a real LLM call (e.g. emergentintegrations.LlmChat) can be swapped in later
+# without touching the route or the frontend.
+# ====================================================================================================
+
+SONAR_AI_INTENTS = [
+    # New canonical 5 (used by the enhanced quick-action chips):
+    "explain_rule",
+    "generate_fix",
+    "alternative_fix",
+    "write_test",
+    "pr_description",
+    # Back-compat: original 5 still accepted so persisted chats keep working.
+    "explain",
+    "suggest_fix",
+    "refactor",
+    "severity",
+    "best_practices",
+]
+
+# Aliases route NEW canonical intents onto the existing back-compat branches so
+# we don't duplicate the longer text bodies. Old codes render their own branches.
+_SONAR_INTENT_ALIAS = {
+    "explain_rule":    "explain",
+    "generate_fix":    "suggest_fix",
+    "alternative_fix": "refactor",
+    # `write_test` and `pr_description` have dedicated branches (handled above).
+    # `severity` and `best_practices` keep their own branches.
+}
+
+
+class SonarChatPrompt(BaseModel):
+    text: str
+    intent: Optional[str] = None  # one of SONAR_AI_INTENTS; falls back to keyword routing
+
+
+def _detect_intent(text: str) -> str:
+    """Crude keyword router used when caller doesn't pass an explicit intent."""
+    t = (text or "").lower()
+    if any(k in t for k in ["rule", "why is this flagged", "what does this rule", "rule mean"]):
+        return "explain_rule"
+    if any(k in t for k in ["alternative", "another way", "different approach", "other option"]):
+        return "alternative_fix"
+    if any(k in t for k in ["test", "unit test", "spec", "coverage"]):
+        return "write_test"
+    if any(k in t for k in ["pr description", "pull request", "commit message", "changelog"]):
+        return "pr_description"
+    if any(k in t for k in ["fix", "patch", "solution", "how do i fix", "remedy"]):
+        return "generate_fix"
+    if any(k in t for k in ["why", "explain", "what is", "what's this", "what does"]):
+        return "explain_rule"
+    if any(k in t for k in ["refactor", "restructure", "rewrite", "clean up"]):
+        return "alternative_fix"
+    if any(k in t for k in ["severity", "priority", "how bad", "impact"]):
+        return "severity"
+    if any(k in t for k in ["best practice", "guideline", "convention", "standard"]):
+        return "pr_description"
+    return "explain_rule"
+
+
+def _mock_sonar_ai_reply(issue: dict, intent: str, user_text: str) -> str:
+    """
+    Produce a deterministic, context-aware mocked reply for a SonarQube issue.
+
+    Each intent composes a short multi-section answer using the issue's real fields
+    (rule, severity, component, suggestedFix, description). When swapping to a real
+    LLM, replace this function's body with an LlmChat call and keep the signature.
+    """
+    if intent not in SONAR_AI_INTENTS:
+        intent = _detect_intent(user_text)
+
+    title = issue.get("title") or issue.get("message", "this issue")
+    rule = issue.get("rule", "unknown rule")
+    component = issue.get("component", "unknown file")
+    line = issue.get("line")
+    severity = issue.get("severity", "INFO")
+    itype = issue.get("type", "CODE_SMELL").replace("_", " ").title()
+    description = issue.get("description") or issue.get("message", "")
+    suggested = issue.get("suggestedFix") or "No prebuilt fix available."
+    location = f"{component}" + (f":{line}" if line else "")
+
+    # New canonical intent branches (priority order). The original 5 are still
+    # handled below for back-compat with persisted chats.
+
+    if intent == "write_test":
+        fname = (component.rsplit("/", 1)[-1] or "module").rsplit(".", 1)[0]
+        return (
+            f"**Regression test for `{rule}`**\n\n"
+            f"Target: `{location}`\n\n"
+            f"Before applying the fix, capture the *current* behaviour so any future "
+            f"regression on this rule fails fast in CI:\n\n"
+            f"```\n"
+            f"// {fname}.test  — verifies the refactor preserves observable behaviour\n"
+            f"describe('{fname} — {rule}', () => {{\n"
+            f"  it('produces the same output for representative inputs', () => {{\n"
+            f"    // arrange: build the minimal input that triggers the flagged branch\n"
+            f"    // act:     call the function/component under test\n"
+            f"    // assert:  compare output to a snapshot captured BEFORE the fix\n"
+            f"  }});\n"
+            f"  it('handles the edge case the rule warns about', () => {{\n"
+            f"    // e.g. nested-state input that previously hit the deep ternary\n"
+            f"  }});\n"
+            f"}});\n"
+            f"```\n\n"
+            f"Pin this test to the PR that applies the fix so reviewers can see green-on-fix."
+        )
+
+    if intent == "pr_description":
+        eff = issue.get("effort") or "low"
+        return (
+            f"**PR description draft**\n\n"
+            f"### Fix `{rule}` in `{component}`\n\n"
+            f"**Why**\n"
+            f"SonarQube flagged this as a **{itype}** ({severity}). "
+            f"{description.splitlines()[0] if description else 'See attached issue.'}\n\n"
+            f"**What changed**\n"
+            f"- Refactored `{component}`"
+            f"{' around line ' + str(line) if line else ''} to apply the suggested remediation.\n"
+            f"- Added a regression test mirroring the rule's failure mode.\n"
+            f"- No public API changes; behaviour preserved.\n\n"
+            f"**How to verify**\n"
+            f"1. `yarn test` — new test should pass.\n"
+            f"2. Re-run SonarQube analysis — `{rule}` should no longer surface this file.\n"
+            f"3. Spot-check the diff in the FixPreview modal before merge.\n\n"
+            f"**Effort**: ~{eff} · **Risk**: low · **Type**: tech-debt"
+        )
+
+    # Alias new canonical intents onto the existing back-compat branches so we
+    # don't duplicate the longer texts:
+    #   explain_rule    -> "explain"
+    #   generate_fix    -> "suggest_fix"
+    #   alternative_fix -> "refactor"
+    intent_for_branch = _SONAR_INTENT_ALIAS.get(intent, intent)
+
+    if intent_for_branch == "explain":
+        return (
+            f"**{title}**\n\n"
+            f"This is a **{itype}** flagged by `{rule}` at `{location}`.\n\n"
+            f"What it means:\n{description}\n\n"
+            f"In plain terms: SonarQube detected a pattern that does not violate the runtime "
+            f"behaviour today but reduces maintainability or hides a latent defect. Addressing "
+            f"it early keeps the codebase healthy and prevents the issue from compounding."
+        )
+
+    if intent_for_branch == "suggest_fix":
+        return (
+            f"**Suggested fix for {title}**\n\n"
+            f"Target: `{location}`\n"
+            f"Rule: `{rule}`\n\n"
+            f"Recommended change:\n```\n{suggested}\n```\n"
+            f"Validation steps:\n"
+            f"1. Apply the change locally.\n"
+            f"2. Run the project linter / unit tests covering this module.\n"
+            f"3. Re-run SonarQube analysis (or the mocked dashboard) and confirm this key disappears.\n"
+            f"4. Open a small focused PR — one rule per PR keeps review easy."
+        )
+
+    if intent_for_branch == "refactor":
+        return (
+            f"**Alternative approach**\n\n"
+            f"Beyond the minimal fix, consider these structural alternatives around `{location}`:\n\n"
+            f"- Extract the affected logic into a small, testable helper with a descriptive name.\n"
+            f"- Add a unit test that captures the original behaviour BEFORE refactoring.\n"
+            f"- Prefer early-return / guard clauses over deeply nested branches.\n"
+            f"- If the same pattern appears in sibling files, batch the change to avoid drift.\n\n"
+            f"Cost estimate: ~{issue.get('effort', 'low')} of focused work. "
+            f"Tag the PR `tech-debt` so it is visible in your weekly review."
+        )
+
+    if intent_for_branch == "severity":
+        sev_map = {
+            "BLOCKER": "Blocks release — must be fixed before merging to main.",
+            "CRITICAL": "High likelihood of production impact — schedule within the current sprint.",
+            "MAJOR": "Real defect or significant smell — plan within the next 1–2 sprints.",
+            "MINOR": "Quality/maintainability concern — pick up opportunistically.",
+            "INFO": "Informational — fix when touching nearby code.",
+        }
+        return (
+            f"**Severity: {severity}**\n\n"
+            f"Type: {itype}\n"
+            f"What `{severity}` means for this codebase:\n{sev_map.get(severity, '—')}\n\n"
+            f"For this specific issue (`{rule}` at `{location}`), the practical impact is that the "
+            f"surrounding code will become progressively harder to change. There is no immediate "
+            f"runtime risk, but each unrelated change in this file pays a small readability tax "
+            f"until the issue is resolved."
+        )
+
+    if intent_for_branch == "best_practices":
+        return (
+            f"**Best-practice guidance**\n\n"
+            f"Rule context: `{rule}`\n\n"
+            f"Principles to keep in mind:\n"
+            f"- Keep functions small and single-purpose (≤ ~20 lines is a good ceiling).\n"
+            f"- Prefer named, intention-revealing variables over abbreviations.\n"
+            f"- Treat lint and SonarQube findings as design feedback, not noise.\n"
+            f"- Add a regression test whenever you fix a BUG-class finding so it cannot return.\n"
+            f"- When you cannot fix immediately, mark the issue **CLAIMED** and link the PR ID "
+            f"in your team's tracker so progress is visible.\n\n"
+            f"Applying these for `{location}` will compound across the codebase — small, "
+            f"consistent improvements outperform occasional big rewrites."
+        )
+
+    return f"_(no mocked reply for intent '{intent}')_"
+
+
+@api_router.get("/sonarqube/issues/{issue_key}/chat")
+async def get_sonar_issue_chat(
+    issue_key: str,
+    current_user: dict = Depends(get_current_user),
+):
+    """Return the chat history for the given SonarQube issue."""
+    _get_sq_issue_or_404(issue_key)  # validates existence
+    chat = await db.sonarqube_chats.find_one({"issue_key": issue_key}, {"_id": 0})
+    return chat or {"issue_key": issue_key, "messages": []}
+
+
+@api_router.post("/sonarqube/issues/{issue_key}/chat")
+async def post_sonar_issue_chat(
+    issue_key: str,
+    body: SonarChatPrompt,
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    Append a user message and produce a mocked AI assistant reply for the given issue.
+    Intents: explain / suggest_fix / refactor / severity / best_practices.
+    """
+    text = (body.text or "").strip()
+    if not text:
+        raise HTTPException(400, "text must not be empty")
+
+    issue = _get_sq_issue_or_404(issue_key)
+    intent = body.intent if body.intent in SONAR_AI_INTENTS else _detect_intent(text)
+
+    chat_doc = await db.sonarqube_chats.find_one({"issue_key": issue_key}, {"_id": 0})
+    messages = chat_doc["messages"] if chat_doc else []
+
+    user_msg = ChatMsg(role="user", text=text, user_email=current_user["email"])
+    messages.append(user_msg.model_dump())
+
+    reply_text = _mock_sonar_ai_reply(issue, intent, text)
+    asst_msg = ChatMsg(role="assistant", text=reply_text)
+    # Attach intent metadata on the assistant message for the UI (and future analytics).
+    asst_payload = {**asst_msg.model_dump(), "intent": intent}
+    messages.append(asst_payload)
+
+    await db.sonarqube_chats.update_one(
+        {"issue_key": issue_key},
+        {"$set": {
+            "issue_key": issue_key,
+            "messages": messages,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }},
+        upsert=True,
+    )
+    return {"user_message": user_msg.model_dump(), "assistant_message": asst_payload}
+
+
+# ====================================================================================================
+# END SonarQube AI Remediation Assistant
+# ====================================================================================================
+
 
 app.include_router(api_router)
 

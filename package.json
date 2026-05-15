@@ -1,0 +1,15 @@
+{
+  "name": "fullstack-app",
+  "version": "1.0.0",
+  "description": "Full stack application with SonarQube integration",
+  "scripts": {
+    "start": "cd frontend && npm start",
+    "install-frontend": "cd frontend && npm install",
+    "install-backend": "cd backend && pip install -r requirements.txt",
+    "sonar": "sonar-scanner",
+    "test": "cd frontend && npm test && cd ../backend && pytest"
+  },
+  "keywords": ["sonarqube", "react", "fastapi"],
+  "author": "",
+  "license": "MIT"
+}
