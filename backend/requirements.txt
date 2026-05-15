@@ -124,3 +124,6 @@ websockets==16.0
 yarl==1.23.0
 zipp==3.23.1
 scikit-learn==1.5.2
+joblib==1.5.3
+threadpoolctl==3.6.0
+scipy==1.17.1
