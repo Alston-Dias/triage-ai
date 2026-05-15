@@ -1,0 +1,31 @@
+{
+  "summary": "Iteration 5 — Mocked SonarQube Code Quality tab end-to-end frontend verification on preview URL (https://sonar-integration.preview.emergentagent.com). FULL PASS. Admin login (admin@triage.ai/admin123) → redirected to /. Sidebar entry 'Code Quality' (data-testid=nav-code-quality, Code2 icon) visible. Navigating to /code-quality renders: (a) header card with project name 'TriageAI Platform', PASSED quality-gate badge, project key 'triageai', version 'v2.0.0', analysisDate; (b) 6 metric cards from GET /api/sonarqube/summary: BUGS=1 (A), VULNERABILITIES=0 (A), CODE SMELLS=3 (A), COVERAGE=78.5% (progress bar yellow), DUPLICATIONS=2.1% (progress bar green), LINES OF CODE=5,847; (c) Issues list from GET /api/sonarqube/issues — 'Issues (4)' total, breakdown row 1/0/3/0, 4 issue items rendered with type+severity badges, component path and effort; (d) Quality Gate card from GET /api/sonarqube/quality-gate — top badge PASSED, conditions list rendered with CheckCircle/XCircle icons + threshold + actualValue in gold; (e) gold info banner. Refresh button (calls refetch) works without error. No 'Failed to fetch' state, ZERO console errors/warnings, ZERO page errors. Logout via [data-testid=logout-btn] returns to /login. Re-login as viewer@triage.ai/viewer123 succeeds and viewer can also access /code-quality (mock endpoints are open per spec).",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/triage-ai-integration/frontend/src/pages/CodeQuality.jsx",
+    "/app/triage-ai-integration/frontend/src/hooks/useSonarQubeData.js",
+    "/app/triage-ai-integration/frontend/src/components/Layout.jsx",
+    "/app/triage-ai-integration/frontend/src/App.js"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "useSonarQubeData.js hard-codes a localhost fallback (`process.env.REACT_APP_API_URL || 'http://localhost:8001/api'`). System guideline says omit defaults so missing config fails fast. Recommend removing the fallback or throwing on missing env var. Currently harmless because the env var is set in /app/triage-ai-integration/frontend/.env.",
+    "useSonarQubeData.js swallows the underlying axios error (`catch (fetchError)`) and only surfaces a generic 'Failed to fetch code quality data'. For debuggability, log fetchError.response?.status and message to console (or pass it through to the UI behind a 'Show details' toggle).",
+    "CodeQuality.jsx Quality Gate operator label is inverted: `condition.operator === 'LESS_THAN' ? 'Must be ≥' : 'Must be ≤'`. The mock data returns operator strings like 'LESS_THAN'/'GREATER_THAN'; mapping 'LESS_THAN' to 'Must be ≥' reads backwards. Verify against the backend mock and either fix the mapping or align the operator names. (Visual confirmation: e.g., coverage threshold renders 'Must be ≥ 80' which is the intended meaning, so the current logic happens to read correctly for LESS_THAN-on-bugs cases — but worth a spec check.)",
+    "Metric cards don't expose data-testid attributes (e.g., metric-bugs, metric-coverage, qg-status, issue-row-{key}). Adding them would make future Playwright assertions far more robust than relying on text matching.",
+    "Pre-existing carryover from iter4: server.py >700 lines, monolithic structure — not in scope for this SonarQube integration but still flagged."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "skipped (per request — already curl-verified)", "frontend": "100%"},
+  "test_credentials": "admin@triage.ai/admin123 (primary), viewer@triage.ai/viewer123 (secondary). engineer@triage.ai/eng123 also available per /app/memory/test_credentials.md.",
+  "seed_data_creation": "None. SonarQube endpoints return static mock JSON (intentional per user request).",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Active workspace: /app/triage-ai-integration/. Supervisor services: triageai-backend (8001) and triageai-frontend (3000). Use preview URL https://sonar-integration.preview.emergentagent.com for browser tests. Key testids: login-email, login-password, login-submit, login-error, nav-code-quality, nav-triage, nav-incidents, nav-analytics, nav-settings, logout-btn, theme-toggle, user-card. CodeQuality page currently has NO testids on inner elements — when expanding tests, request main agent to add testids like metric-{title}, qg-status, issue-{key}, refresh-btn. Mock endpoints are public (no JWT required).",
+  "rca of the issue": "N/A — no issues found. Previous report mentioned frontend .env was just fixed to include REACT_APP_BACKEND_URL and REACT_APP_API_URL; this fix is confirmed working end-to-end."
+}

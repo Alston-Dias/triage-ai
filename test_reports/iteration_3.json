@@ -1,0 +1,40 @@
+{
+  "summary": "Iteration 3 (real per-source webhook ingestion) — full e2e PASS. Backend: 33/33 pytest tests pass (20 regression from iter2 + 13 new webhook tests covering CloudWatch ALARM→critical, Datadog error→high, PagerDuty urgency→high, Grafana/Alertmanager multi-alert, custom passthrough, 401 wrong/missing token, 404 missing source, 403 disabled source, /test endpoint auth + counter increment). Frontend: Settings page validated headlessly — webhook URLs render masked by default, eye toggle reveals/hides real token, copy works, PlayCircle 'test' button fires sample → toast 'Test successful · ingested 1 alert' → ingest_count increments from 0→1, 'last 5s ago' appears, Add Source flow creates a new row with its own 32-char ingest token and full webhook URL.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "GET /api/sources (default seeded)", "issue": "Default seeded sources (cloudwatch, datadog, pagerduty, grafana) have ingest_token of 26-28 hex chars instead of the spec'd 32-char hex. Tokens still authenticate fine — newly created sources via POST /api/sources DO produce 32-char hex tokens. Likely: previously-seeded data carried over from before iter3 had tokens lose leading zeros somewhere; on_startup backfill only fills missing/empty/null tokens, so existing short-but-non-null tokens are left as-is. Functional impact: zero. Cosmetic/spec impact only."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/backend_test.py",
+    "/app/backend/tests/test_webhook_ingest.py",
+    "/app/test_reports/pytest/iter3_full.xml",
+    "/app/test_reports/pytest/iter3_webhook.xml"
+  ],
+  "action_items": [
+    "(Optional) Strengthen on_startup backfill: also rewrite tokens whose length != 32 OR are not strict hex, to bring legacy seeded sources up to 32-char spec. Code: change the $or filter on /app/backend/server.py:246 to also match {'$expr': {'$ne': [{'$strLenCP': '$ingest_token'}, 32]}}. Non-blocking — auth still works."
+  ],
+  "critical_code_review_comments": [
+    "server.py is now ~948 lines (was ~760 in iter2) — well past the 700-line guideline. Webhook adapters (_norm_severity, _adapt_payload, SAMPLE_PAYLOADS) and the ingest/test routes should move to /app/backend/routes/sources.py + /app/backend/services/webhook_adapters.py.",
+    "POST /api/sources/{id}/ingest accepts arbitrary `payload: dict` — no size cap, no content-type enforcement. Add a max body size and reject non-application/json before prod.",
+    "POST /api/sources/{id}/ingest does not rate-limit per source — a misconfigured CloudWatch alarm could flood the alerts collection. Consider per-source rate limiting or dedup on (source, title, service) within a short window.",
+    "Adapter for cloudwatch only handles SNS Message-as-string in payload['Records'][0].Sns.Message; if AWS sends raw SNS w/ Message as already-parsed dict it falls back to top-level fields. Acceptable but document.",
+    "_adapt_payload swallows exceptions and returns []; ingest then returns 400 'Could not parse payload' which is correct, but the underlying error is only in logs. Consider returning the exception class in dev mode.",
+    "Pre-existing: server.py is monolithic, /api/sources mutations have no role-check (viewer can mutate), pickup unconditionally overwrites assignee, /auth/users is open to all roles."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_webhook_ingest.py (new)"
+  ],
+  "success_rate": {"backend": "100% (33/33)", "frontend": "100%"},
+  "test_credentials": "admin@triage.ai/admin123, sre1@triage.ai/sre123, viewer@triage.ai/viewer123 — see /app/memory/test_credentials.md.",
+  "seed_data_creation": "Default sources seeded once on startup. New TEST_ sources created and cleaned up within tests. POST /api/seed re-seeds 10 deterministic alerts.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Run: pytest /app/backend/tests/ -v (~70s incl. 2 real Claude calls in chat tests). Webhook-only suite: pytest /app/backend/tests/test_webhook_ingest.py -v (~3s, no LLM). New frontend testids on Settings: webhook-url-{src_id}, reveal-token-{src_id}, copy-url-{src_id}, test-source-{src_id}. Webhook ingest is intentionally public (no JWT) — only per-source ingest_token via ?token= query OR X-Ingest-Token header. /test is JWT-protected and reuses _adapt_payload internally. Counters update on both /ingest and /test."
+}

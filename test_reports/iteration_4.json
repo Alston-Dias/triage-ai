@@ -1,0 +1,40 @@
+{
+  "summary": "Iteration 4 (notification channels + theme toggle) — full backend + frontend e2e PASS. Backend: 48/48 pytest tests pass (33 regression from iter3 + 15 new notifications). Notification channel CRUD with require_admin RBAC enforced (viewer 403 on POST/PATCH/DELETE/test, 200 on GET). Adapter test endpoint for slack/teams/discord/webhook all return {status:'ok'} against https://httpbin.org/post. Email channel returns 'error: api_key missing' / 'error: to_email missing' / graceful 'error: ...' for fake key (no crash). dispatch_event fires asynchronously: P1/P2 incident_created on /triage produces notification_log entry within 5s; /incidents/{id}/resolve fires incident_resolved; /alerts/unattended after /demo/age-alerts creates 3 sla_breach dispatches on first call and ZERO additional on second call (per-alert dedup verified). Frontend: admin login → theme toggle flips data-theme=light, persists in localStorage 'triage_theme', survives reload. Settings → Notifications section renders. Admin sees Add Channel button; full create→test→edit→toggle→delete flow works with httpbin webhook. Type selector swaps fields (slack→webhook_url; email→api_key+from_email+to_email). Viewer login → no Add Channel button, 'read-only · admin only' label visible. Light theme dashboard is readable: black text on white bg, gold accent preserved, CRIT/HIGH badges visible, SLA banner readable, alert rows clearly delineated.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_notifications.py",
+    "/app/backend/tests/backend_test.py",
+    "/app/backend/tests/test_webhook_ingest.py",
+    "/app/test_reports/pytest/iter4_notifications.xml",
+    "/app/test_reports/pytest/iter4_full.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py is now 1156 lines (up from 948 in iter3) — well past the 700-line guideline. Notification adapters (_send_via_channel, dispatch_event) and routes should be extracted to /app/backend/services/notifications.py + /app/backend/routes/notifications.py. Same applies to webhook adapters flagged in iter3.",
+    "_send_via_channel email branch is INSIDE the try/except but OUTSIDE the async-with httpx.AsyncClient block (lines 941-951). Functionally fine (resend uses sync SDK via asyncio.to_thread), but visually subtle — a future code change adding email-over-http would accidentally not be wrapped. Consider restructuring to per-type private helpers (_send_slack/_send_email/...) to make this clear.",
+    "resend.api_key is set as a MODULE-LEVEL attribute in _send_via_channel — under concurrent dispatches with different email channels (different api keys) this is a race condition. Each call should pass api_key explicitly to resend.Emails.send (resend SDK supports `headers={'Authorization':'Bearer <key>'}`) or use a per-call client.",
+    "POST /api/notifications/channels/{id}/test does not validate that the user's input config has been saved — it uses the stored config. OK by design, but means UI changes in the Add-form must be saved before testing. UI already gates Test to existing rows so this is fine.",
+    "dispatch_event uses asyncio.gather with return_exceptions=True — failures in individual channels silently swallowed by gather but each _do() already has its own try-in-_send_via_channel and logs the error string. Acceptable.",
+    "Trigger label change: NotificationChannelIn default triggers = ['incident_created','sla_breach'] — does NOT include 'incident_resolved' even though spec says 'Defaults accepted: ... triggers incident_created+sla_breach+incident_resolved'. Minor: UI Add form toggles can still enable it; main impact is API default if client omits 'triggers'. Consider updating default to include all three for consistency with the user's stated default.",
+    "SLA breach dedup uses notification_log.find_one({'event':'sla_breach','alert_id':aid}) — this means if a user deletes the notification_log to 'replay' breaches, no dispatch happens. Also, marker entry is inserted directly into notification_log with status='breach_marker' before any actual channel dispatch — these marker entries surface in GET /notifications/log mixed with real send records, which the UI log section will display. Consider a separate collection (e.g., sla_breach_markers) or filter them out of the log endpoint.",
+    "Pre-existing carryover: monolithic server.py, /api/sources mutations have no role-check (viewer can mutate), pickup overwrites assignee unconditionally, /auth/users open to all roles."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_notifications.py (new)"
+  ],
+  "success_rate": {"backend": "100% (48/48)", "frontend": "100%"},
+  "test_credentials": "admin@triage.ai/admin123, sre1@triage.ai/sre123, sre2@triage.ai/sre123, viewer@triage.ai/viewer123 — see /app/memory/test_credentials.md.",
+  "seed_data_creation": "Tests create TEST_/UI_TEST_ prefixed notification channels and clean them up. /api/seed re-seeds 10 alerts when needed. /api/demo/age-alerts ages 3 alerts to 6 days for SLA tests.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Run: pytest /app/backend/tests/ -v (~131s incl. 4 real Claude triage calls). Notification-only suite: pytest /app/backend/tests/test_notifications.py -v (~35s, no LLM beyond the 2 triage tests). Key testids: theme-toggle (header), notifications-section, add-channel-btn, channel-form, channel-type (select), channel-name, channel-webhook_url, channel-api_key/from_email/to_email, trigger-incident_created/sla_breach/incident_resolved, channel-submit, channel-row-{id}, test-channel-{id}, edit-channel-{id}, toggle-channel-{id}, delete-channel-{id}, notification-log-details. dispatch_event runs via asyncio.create_task — always sleep 3-5s before polling /notifications/log. SLA breach markers are written to notification_log with status='breach_marker' alongside real dispatch entries (event='sla_breach', channel_id=ch.id).",
+  "rca of the issue": "N/A — no issues found."
+}

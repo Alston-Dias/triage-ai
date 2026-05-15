@@ -1,0 +1,120 @@
+{
+  "theme": "dark",
+  "archetype": "Archetype 2 / 4 Hybrid (Tactical Control Room / Terminal)",
+  "vibe": "Information-dense, authoritative, precision-focused, terminal-inspired brutalism.",
+  "typography": {
+    "font_families": {
+      "headings": "Chivo",
+      "body": "JetBrains Mono",
+      "data_and_code": "JetBrains Mono"
+    },
+    "hierarchy": {
+      "h1": "text-3xl sm:text-4xl tracking-tighter font-black",
+      "h2": "text-2xl sm:text-3xl tracking-tight font-bold",
+      "h3": "text-xl sm:text-2xl tracking-tight font-medium",
+      "h4": "text-lg sm:text-xl tracking-tight font-medium uppercase text-neutral-400",
+      "body": "text-sm leading-relaxed",
+      "labels": "text-xs tracking-[0.1em] uppercase",
+      "data_values": "text-lg sm:text-xl font-bold tracking-tight"
+    },
+    "custom_instructions": "Headings must use Chivo for structured weight. All body text, numbers, metrics, and incident logs MUST use JetBrains Mono to reinforce the terminal/SRE environment. Avoid 'Inter' entirely."
+  },
+  "colors": {
+    "background": {
+      "base": "#0A0A0A",
+      "surface": "#121212",
+      "surface_elevated": "#1A1A1A",
+      "surface_hover": "#262626"
+    },
+    "border": {
+      "default": "#262626",
+      "active": "#404040",
+      "focus": "#007AFF"
+    },
+    "text": {
+      "primary": "#FFFFFF",
+      "secondary": "#A1A1AA",
+      "muted": "#71717A",
+      "inverse": "#000000"
+    },
+    "severity": {
+      "critical_p1": {
+        "text": "#FF3B30",
+        "bg": "rgba(255, 59, 48, 0.1)",
+        "border": "rgba(255, 59, 48, 0.3)"
+      },
+      "high_p2": {
+        "text": "#FF9F0A",
+        "bg": "rgba(255, 159, 10, 0.1)",
+        "border": "rgba(255, 159, 10, 0.3)"
+      },
+      "medium_p3": {
+        "text": "#0A84FF",
+        "bg": "rgba(10, 132, 255, 0.1)",
+        "border": "rgba(10, 132, 255, 0.3)"
+      },
+      "low_p4": {
+        "text": "#30D158",
+        "bg": "rgba(48, 209, 88, 0.1)",
+        "border": "rgba(48, 209, 88, 0.3)"
+      }
+    },
+    "ai_accent": {
+      "primary": "#D4AF37",
+      "bg": "rgba(212, 175, 55, 0.1)",
+      "border": "rgba(212, 175, 55, 0.3)"
+    }
+  },
+  "layout": {
+    "grid_system": "MODE B: THE 'CONTROL ROOM' GRID. Strict, dense hierarchy. Use grid-cols-1 md:grid-cols-3 lg:grid-cols-4 or grid-cols-12. Every pixel must be utilized with sharp borders.",
+    "spacing": "Tight padding (p-4, p-6). Elements must be grouped logically. Use border-collapse patterns or strict 1px grid borders.",
+    "borders": "1px solid strokes everywhere. Replace soft shadows with crisp borders. Add 2px inner highlights (box-shadow: inset 0 1px 0 rgba(255,255,255,0.05)) for buttons.",
+    "radius": "rounded-none or max rounded-sm (2px - 4px) for interactive elements. No large rounded corners."
+  },
+  "components": {
+    "cards": {
+      "style": "Flat background (#121212), 1px subtle border (#262626), NO SHADOW. On hover, background shifts to #1A1A1A.",
+      "padding": "p-4 or p-6"
+    },
+    "buttons": {
+      "primary": "bg-white text-black font-bold hover:bg-neutral-200 border-none rounded-sm transition-colors",
+      "secondary": "bg-transparent text-white border border-neutral-700 hover:border-neutral-500 hover:bg-neutral-900 rounded-sm",
+      "danger": "bg-[#FF3B30]/10 text-[#FF3B30] border border-[#FF3B30]/30 hover:bg-[#FF3B30]/20 rounded-sm"
+    },
+    "badges": {
+      "style": "border rounded-none px-2 py-0.5 text-[10px] font-mono tracking-widest uppercase"
+    },
+    "ai_panel": {
+      "style": "Use 'Retro-Futurism' Terminal look. Background deep obsidian. Subtle CSS repeating-linear-gradient overlay for scanlines. Border glowing softly with AI accent color (muted gold or cyan)."
+    },
+    "data_tables_and_lists": {
+      "style": "Dense. border-b border-neutral-800 for rows. hover:bg-neutral-900 transition-colors. Text aligns left."
+    }
+  },
+  "motion_and_interactions": {
+    "hover": "Explicit hover states on all interactive elements. Buttons lift slightly (-translate-y-[1px]) with faster transitions (0.15s).",
+    "focus": "High contrast focus rings. focus:ring-1 focus:ring-white focus:outline-none.",
+    "animations": "Minimal. Staggered fade-ins for incident feed lists. 'Tracing beam' or typing effect for AI-generated playbooks."
+  },
+  "media_and_assets": {
+    "icons_library": "@phosphor-icons/react (Duotone or Regular weight for legibility in dense UI)",
+    "images": {
+      "background_texture": {
+        "url": "https://images.unsplash.com/photo-1760978631768-24a09b0c6075?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NDk1NzZ8MHwxfHNlYXJjaHwyfHxhYnN0cmFjdCUyMGRhcmslMjB0ZWNobmljYWwlMjBtZXNoJTIwZGF0YXxlbnwwfHx8fDE3NzgzOTA3MDN8MA&ixlib=rb-4.1.0&q=85",
+        "category": "abstract_data_mesh",
+        "instructions": "Use with extremely low opacity (opacity-5) and mix-blend-overlay or backdrop-blur in the background of the auth screen or behind the AI reasoning panel to give a subtle textured tech feel."
+      }
+    }
+  },
+  "accessibility_and_testing": {
+    "contrast": "Ensure text contrast meets APCA/WCAG standards. No grey-on-grey unreadable text.",
+    "testing_attributes": "All interactive elements MUST include data-testid. E.g., data-testid='resolve-incident-btn', data-testid='severity-filter-critical'."
+  },
+  "instructions_to_main_agent": [
+    "Install required fonts: JetBrains Mono and Chivo via Google Fonts.",
+    "Install @phosphor-icons/react.",
+    "Use pure HTML/Tailwind for structural dashboard grids to achieve the 'Control Room' density, and highly customized Shadcn components for complex interactions (dropdowns, dialogs).",
+    "Ensure the layout feels like an SRE terminal: dense, dark, strictly bounded by 1px borders, relying heavily on the severity color palette for quick visual parsing.",
+    "When rendering AI reasoning or playbooks, use a typewriter or sequential fade-in animation, styled like terminal output."
+  ]
+}
