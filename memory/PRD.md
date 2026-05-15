@@ -1,86 +1,71 @@
-# TriageAI + Mocked SonarQube Integration — PRD
+# TriageAI – PRD
 
-## Original Problem Statement
-Analyze the repository and implement the minimal required setup for SonarQube integration.
-Evolved into:
-1. Use mocked/static data for SonarQube (no live SonarQube server).
-2. Integrate the mocked SonarQube Code Quality dashboard as a new tab/feature into the `triage-ai` application (cloned from https://github.com/simransirsat/triage-ai.git).
-3. Restructure so the cloned repo lives at `/app/` (workspace root) so Emergent's "Save to GitHub" works.
+## Original problem statement
+Resolve merge conflicts for PR #4 of `Alston-Dias/triage-ai`
+(<https://github.com/Alston-Dias/triage-ai/pull/4>) and make sure that nothing
+breaks. Test everything.
 
-## Active Workspace
-`/app/` (was `/app/triage-ai-integration/`, flattened on 2026-05-14 — `.git` preserved, remote still `https://github.com/simransirsat/triage-ai.git`).
+The PR (`simransirsat:sonar-feature` → `Alston-Dias:main`) adds a SonarQube
+Code Quality dashboard with AI chat. `main` had meanwhile gained F-02
+Predictive Triage. Both features must coexist after the merge.
 
-## Services (supervisor — `/etc/supervisor/conf.d/supervisord.conf` defaults)
-- `backend` — FastAPI on port 8001 (directory `/app/backend`)
-- `frontend` — React (craco) on port 3000 (directory `/app/frontend`)
-- `mongodb` — local Mongo
+## Architecture
+- **Backend** — FastAPI single-file app (`/app/backend/server.py`, 3.3k LOC).
+  Routes registered under `/api`. MongoDB via motor. Claude via
+  `emergentintegrations`. WebSocket `/api/ws/predictive-alerts`.
+- **Frontend** — React 18 + CRA + craco + Tailwind + lucide-react.
+  Routes: `/` (Live Triage), `/incidents`, `/incidents/:id`, `/predictive`,
+  `/analytics`, `/code-quality`, `/settings`.
+- **Auth** — JWT (HS256, 24h), bcrypt password hashes. 4 seeded users.
 
-## Auth (pre-seeded users — see `SEED_USERS` in `/app/backend/server.py`)
-| Role | Email | Password |
-|---|---|---|
-| Admin | admin@triage.ai | admin123 |
-| On-call | sre1@triage.ai | sre123 |
-| On-call | sre2@triage.ai | sre123 |
-| Viewer | viewer@triage.ai | viewer123 |
+## Conflicts resolved in this merge
+| File | Strategy |
+| ---- | -------- |
+| `.emergent/emergent.yml` | Kept HEAD metadata |
+| `.gitignore` | Deduped both sides into a clean canonical list |
+| `backend/server.py` | Kept HEAD imports (WebSocket needed) + **both** F-02 Predictive block and SonarQube block |
+| `backend_test.py` | Kept HEAD's F-02 tests; PR's Sonar tests preserved as `backend_test_sonar.py` |
+| `frontend/src/App.js` | Imported and routed both `PredictiveDashboard` and `CodeQuality` |
+| `frontend/src/components/Layout.jsx` | Merged icon imports (`TrendingUp` + `Code2`); NAV already had both entries |
+| `test_result.md` | Kept full history blocks from both sides |
 
-Login: `POST /api/auth/login` → returns JWT + user object. Token stored as `triage_token` in localStorage.
+## Features (post-merge)
+### F-02 Predictive Triage (HEAD)
+- 5 monitored services × 5 metric types, 4h synthetic history seeded in `db.metrics`.
+- IsolationForest anomaly detection → risk score 0–100 + ETA + Claude recommendation.
+- REST: `GET /api/predictive-services/summary`, `GET /api/predictive-incidents`,
+  `POST /api/predictive-triage`, `GET .../trend`, `PATCH .../acknowledge`,
+  `PATCH .../resolve`.
+- WebSocket: `wss://.../api/ws/predictive-alerts?token=<JWT>` — emits `snapshot`
+  on connect and `prediction.new` on each run.
 
-## SonarQube Mock API
-**Read endpoints (no auth):**
-- `GET /api/sonarqube/summary` — project metadata, bugs/vulnerabilities/codeSmells/coverage/duplications/LOC + ratings
-- `GET /api/sonarqube/issues` — list of issues with extended fields (title, description, rule, suggestedFix, assignee, status, type, severity, component/line, effort, tags)
-- `GET /api/sonarqube/quality-gate` — gate status + condition rows
+### SonarQube Code Quality + AI Chat (PR)
+- Mock SonarQube dataset (4 issues across 4 components).
+- REST: `GET /api/sonarqube/summary`, `GET /api/sonarqube/issues`,
+  `GET .../{key}`, `POST .../{key}/claim`, `POST .../{key}/assign`,
+  `PATCH .../{key}/status`, `GET /api/sonarqube/quality-gate`,
+  `POST .../{key}/generate-fix`, `GET|POST .../{key}/comments`,
+  `POST .../{key}/chat` (5 intents: Explain Rule, Generate Fix,
+  Alternative Fix, Write Test, PR Description).
 
-**Issue workflow endpoints (Bearer token required):**
-- `GET /api/sonarqube/issues/{key}` — full detail for one issue
-- `POST /api/sonarqube/issues/{key}/claim` — assignee = current user, status = CLAIMED
-- `POST /api/sonarqube/issues/{key}/assign` body `{email}` — assignee = email (OPEN auto-bumps to CLAIMED). 404 if user unknown.
-- `PATCH /api/sonarqube/issues/{key}/status` body `{status}` — status ∈ {OPEN, CLAIMED, IN_PROGRESS, FIXED}. Setting OPEN clears assignee.
+## Test status (iteration_8)
+- Backend pytest: **27/27 PASS** (`/app/backend/tests/test_post_merge_pr4.py`).
+- Frontend Playwright: **100%** of critical post-merge flows verified.
+- **No regressions** introduced by the merge.
 
-**AI Remediation Assistant (Bearer token required, mocked replies):**
-- `GET /api/sonarqube/issues/{key}/chat` — chat history (empty list initially)
-- `POST /api/sonarqube/issues/{key}/chat` body `{text, intent?}` — appends user msg + mocked assistant reply. Intent ∈ {explain, suggest_fix, refactor, severity, best_practices}; if omitted, keyword-routed by `_detect_intent`. Assistant message includes `intent` field. Persists in `db.sonarqube_chats` (per-issue history).
-- Reply generator is a single function `_mock_sonar_ai_reply(issue, intent, user_text)` — swap to LlmChat later without touching routes/frontend.
+## What's been implemented
+- 2026-05-15 — Resolved 7 merge conflicts from PR #4; both Predictive Triage
+  and SonarQube Code Quality features verified working end-to-end.
 
-All read endpoints serve static mock JSON; the workflow endpoints persist mutations in an in-memory dict `_SQ_ISSUE_STATE` keyed by issue key (resets on backend restart — intentional for the mock).
+## Backlog / Future
+- (P2) Split `server.py` into routers (`routers/predictive.py`,
+  `routers/sonarqube.py`) — file is now 3.3k lines.
+- (P2) Tighten auth on `/api/sonarqube/summary|issues|quality-gate` — currently
+  publicly readable.
+- (P3) Add `service-risk-card-{name}` testids on Predictive cards.
+- (P3) Add `aria-describedby` to Radix `DialogContent` (a11y).
+- (P3) Promote `_SQ_ISSUE_STATE` from in-process dict to Mongo collection.
 
-## Frontend env (`/app/frontend/.env`)
-```
-REACT_APP_BACKEND_URL=https://sonar-integration.preview.emergentagent.com
-REACT_APP_API_URL=https://sonar-integration.preview.emergentagent.com/api
-```
-- `REACT_APP_BACKEND_URL` consumed by `src/lib/api.js` (general API + auth)
-- `REACT_APP_API_URL` consumed by `src/hooks/useSonarQubeData.js` (SonarQube mock calls)
-
-## Code Quality UI
-- Route: `/code-quality`
-- Page: `src/pages/CodeQuality.jsx`
-- Sidebar nav entry: `data-testid="nav-code-quality"` (Code2 icon)
-- Renders: header card (project + quality-gate badge), 6 metric cards (bugs / vulnerabilities / code smells / coverage% / duplications% / LOC), issues list, quality gate conditions
-
-## What's Implemented (chronological)
-- 2026-05-14 — Cloned triage-ai repo into `/app/triage-ai-integration/`
-- 2026-05-14 — Mock SonarQube endpoints wired into `server.py`
-- 2026-05-14 — `CodeQuality.jsx` page + `useSonarQubeData` hook + sidebar nav entry
-- 2026-05-14 — Fixed `ajv-keywords` vs `ajv` version conflict on frontend; added `python-dotenv` to backend deps
-- 2026-05-14 — Supervisor entries `triageai-backend` + `triageai-frontend` created
-- 2026-05-14 — Fixed missing `REACT_APP_BACKEND_URL` in frontend `.env` (was blocking login)
-- 2026-05-14 — `testing_agent_v3_fork` iter 5: 100% frontend pass on `/app/triage-ai-integration/test_reports/iteration_5.json`
-- 2026-05-14 — **Workspace flattened**: deleted stale `/app/backend` + `/app/frontend` POC, moved `/app/triage-ai-integration/*` to `/app/` (preserving `.git`), updated supervisor config to point to `/app/backend` and `/app/frontend`. Result: `/app/.git` now points to `simransirsat/triage-ai` so Emergent's "Save to GitHub" works.
-
-## Backlog / P1
-- Replace localhost fallback in `useSonarQubeData.js` with strict env (`process.env.REACT_APP_API_URL`)
-- Surface underlying axios error (status + message) in `useSonarQubeData` for easier debugging
-- Verify operator label mapping in `CodeQuality.jsx` (`LESS_THAN` → `Must be ≥` vs `Must be ≤`) against intended UX spec
-- Add `data-testid` attributes to Code Quality inner elements (`metric-{title}`, `qg-status`, `issue-{key}`, `refresh-btn`) for richer e2e tests
-
-## Backlog / P2
-- Split monolithic `server.py` (>700 lines) into route modules under `backend/routes/`
-- Add backend pytest coverage for `/api/sonarqube/*` endpoints
-
-## Known Mocks / Stubs
-- **MOCKED**: All three `/api/sonarqube/*` endpoints serve static JSON. No live SonarQube/SonarCloud connection.
-
-## GitHub Push
-- Workspace is now a valid git repo at `/app` with `origin → https://github.com/simransirsat/triage-ai.git`.
-- Click **"Save to GitHub"** in Emergent UI to push (recommended branch: feature branch since main is protected upstream).
+## Next tasks
+1. (Optional) Push resolved branch back via "Save to GitHub" – user choice.
+2. (Optional) Address the P2 backlog items above before next feature work.
