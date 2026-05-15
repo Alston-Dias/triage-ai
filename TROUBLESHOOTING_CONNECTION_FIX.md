@@ -10,7 +10,7 @@ The frontend `.env` file was configured with a production URL instead of the loc
 
 **Before (Incorrect)**:
 ```env
-REACT_APP_BACKEND_URL=https://sonar-integration.preview.emergentagent.com
+REACT_APP_BACKEND_URL=https://code-snapshot-21.preview.emergentagent.com
 ```
 
 **After (Fixed)**:

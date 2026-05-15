@@ -5,6 +5,7 @@ import { Card } from '../components/ui/card';
 import { Badge } from '../components/ui/badge';
 import IssueDetailSheet from '../components/IssueDetailSheet';
 import SonarSummaryBar from '../components/SonarSummaryBar';
+import CodeQualityScansPanel from '../components/CodeQualityScansPanel';
 import { Toaster } from 'sonner';
 import { listUsers } from '../lib/api';
 import { severityBucket, BUCKET_BADGE_CLASS, BUCKET_LABEL } from '../lib/severity';
@@ -472,7 +473,16 @@ export default function CodeQuality() {
   }
 
   return (
-    <div className="space-y-6 pb-8">
+    <div className="space-y-8 pb-8">
+      {/* === Code Quality v2 — user-driven scans + integrations === */}
+      <CodeQualityScansPanel />
+
+      <div className="border-t border-[#1f1f1f] pt-6">
+        <div className="text-[11px] uppercase tracking-wider text-neutral-500 mb-4 font-semibold">
+          Demo project · static SonarQube dashboard
+        </div>
+      </div>
+
       {/* Header */}
       <Card className="bg-[#0d0d0d] border-[#1f1f1f] p-6">
         <div className="flex items-center justify-between">

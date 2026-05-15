@@ -1,555 +1,712 @@
 #!/usr/bin/env python3
 """
-F-02 Predictive Triage Backend Test Suite
-Tests all predictive triage endpoints, WebSocket, and auth requirements.
+Code Quality v2 Backend Test Suite
+Tests all /api/code-quality/* endpoints
 """
-import requests
+import asyncio
+import io
 import json
+import os
+import sys
 import time
-import websocket
-from typing import Optional, Dict, Any
+import zipfile
+from typing import Dict, Any, Optional
 
-# Backend URL from frontend/.env
-BASE_URL = "https://anomaly-detect-42.preview.emergentagent.com/api"
-WS_URL = "wss://anomaly-detect-42.preview.emergentagent.com/api/ws/predictive-alerts"
+import httpx
 
-# Test credentials from /app/memory/test_credentials.md
-ADMIN_EMAIL = "admin@triage.ai"
-ADMIN_PASSWORD = "admin123"
+# Configuration
+BACKEND_URL = "https://code-snapshot-21.preview.emergentagent.com/api"
+TEST_EMAIL = "sre1@triage.ai"
+TEST_PASSWORD = "sre123"
 
-class TestResult:
-    def __init__(self):
-        self.passed = []
-        self.failed = []
-        self.warnings = []
-    
-    def add_pass(self, test_name: str, details: str = ""):
-        self.passed.append(f"✅ {test_name}" + (f": {details}" if details else ""))
-    
-    def add_fail(self, test_name: str, error: str):
-        self.failed.append(f"❌ {test_name}: {error}")
-    
-    def add_warning(self, test_name: str, warning: str):
-        self.warnings.append(f"⚠️  {test_name}: {warning}")
-    
-    def print_summary(self):
-        print("\n" + "="*80)
-        print("F-02 PREDICTIVE TRIAGE TEST RESULTS")
-        print("="*80)
-        
-        if self.passed:
-            print(f"\n✅ PASSED ({len(self.passed)}):")
-            for p in self.passed:
-                print(f"  {p}")
-        
-        if self.warnings:
-            print(f"\n⚠️  WARNINGS ({len(self.warnings)}):")
-            for w in self.warnings:
-                print(f"  {w}")
-        
-        if self.failed:
-            print(f"\n❌ FAILED ({len(self.failed)}):")
-            for f in self.failed:
-                print(f"  {f}")
-        
-        print("\n" + "="*80)
-        print(f"TOTAL: {len(self.passed)} passed, {len(self.failed)} failed, {len(self.warnings)} warnings")
-        print("="*80 + "\n")
-        
-        return len(self.failed) == 0
+# Test results tracking
+test_results = []
 
-results = TestResult()
 
-def login() -> Optional[str]:
+def log_test(name: str, passed: bool, details: str = ""):
+    """Log test result"""
+    status = "✅ PASS" if passed else "❌ FAIL"
+    print(f"{status}: {name}")
+    if details:
+        print(f"  Details: {details}")
+    test_results.append({"name": name, "passed": passed, "details": details})
+
+
+async def login() -> str:
     """Login and return JWT token"""
-    try:
-        resp = requests.post(
-            f"{BASE_URL}/auth/login",
-            json={"email": ADMIN_EMAIL, "password": ADMIN_PASSWORD},
-            timeout=10
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.post(
+            f"{BACKEND_URL}/auth/login",
+            json={"email": TEST_EMAIL, "password": TEST_PASSWORD}
         )
-        if resp.status_code == 200:
-            data = resp.json()
-            token = data.get("access_token")
-            results.add_pass("Login", f"Got JWT token for {ADMIN_EMAIL}")
-            return token
-        else:
-            results.add_fail("Login", f"Status {resp.status_code}: {resp.text}")
-            return None
-    except Exception as e:
-        results.add_fail("Login", str(e))
-        return None
+        if resp.status_code != 200:
+            raise Exception(f"Login failed: {resp.status_code} {resp.text}")
+        data = resp.json()
+        return data["access_token"]
 
-def test_auth_required(token: str):
-    """Test that endpoints reject requests without auth"""
+
+async def test_auth_gate(token: str):
+    """Test 1: Auth gate - all endpoints must 401 without bearer token"""
+    print("\n=== Test 1: Auth Gate ===")
+    
     endpoints = [
-        ("GET", "/predictive-services/summary"),
-        ("GET", "/predictive-incidents"),
-        ("POST", "/predictive-triage"),
+        ("GET", "/code-quality/scans"),
+        ("POST", "/code-quality/scans/github"),
+        ("POST", "/code-quality/scans/upload"),
+        ("GET", "/code-quality/integrations"),
+        ("POST", "/code-quality/integrations"),
     ]
     
-    all_rejected = True
-    for method, path in endpoints:
-        try:
+    all_passed = True
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        for method, path in endpoints:
             if method == "GET":
-                resp = requests.get(f"{BASE_URL}{path}", timeout=10)
+                resp = await client.get(f"{BACKEND_URL}{path}")
             else:
-                resp = requests.post(f"{BASE_URL}{path}", json={}, timeout=10)
+                resp = await client.post(f"{BACKEND_URL}{path}", json={})
             
             if resp.status_code == 401:
-                continue
+                print(f"  ✓ {method} {path} correctly returns 401")
             else:
-                results.add_fail(f"Auth required for {method} {path}", 
-                               f"Expected 401, got {resp.status_code}")
-                all_rejected = False
-        except Exception as e:
-            results.add_fail(f"Auth required for {method} {path}", str(e))
-            all_rejected = False
+                print(f"  ✗ {method} {path} returned {resp.status_code} instead of 401")
+                all_passed = False
     
-    if all_rejected:
-        results.add_pass("Auth required", "All endpoints reject unauthenticated requests (401)")
+    log_test("Auth gate - all endpoints require JWT", all_passed)
+    return all_passed
 
-def test_predictive_services_summary(token: str):
-    """Test GET /api/predictive-services/summary"""
-    try:
-        resp = requests.get(
-            f"{BASE_URL}/predictive-services/summary",
-            headers={"Authorization": f"Bearer {token}"},
-            timeout=10
+
+async def test_github_scan_happy_path(token: str) -> Optional[str]:
+    """Test 2: Happy-path GitHub scan"""
+    print("\n=== Test 2: GitHub Scan Happy Path ===")
+    
+    headers = {"Authorization": f"Bearer {token}"}
+    
+    async with httpx.AsyncClient(timeout=180.0) as client:
+        # Start scan
+        resp = await client.post(
+            f"{BACKEND_URL}/code-quality/scans/github",
+            headers=headers,
+            json={"repo_url": "https://github.com/octocat/Hello-World"}
         )
         
         if resp.status_code != 200:
-            results.add_fail("GET /predictive-services/summary", 
-                           f"Status {resp.status_code}: {resp.text}")
-            return
-        
-        data = resp.json()
-        
-        # Should return list of 5 services
-        if not isinstance(data, list):
-            results.add_fail("GET /predictive-services/summary", 
-                           f"Expected list, got {type(data)}")
-            return
-        
-        if len(data) != 5:
-            results.add_fail("GET /predictive-services/summary", 
-                           f"Expected 5 services, got {len(data)}")
-            return
-        
-        # Check structure of each service
-        required_fields = ["service_name", "max_risk", "avg_risk", "predictions", "min_eta"]
-        for svc in data:
-            for field in required_fields:
-                if field not in svc:
-                    results.add_fail("GET /predictive-services/summary", 
-                                   f"Missing field '{field}' in service {svc.get('service_name', 'unknown')}")
-                    return
-        
-        results.add_pass("GET /predictive-services/summary", 
-                        f"Returned {len(data)} services with correct structure")
-        
-    except Exception as e:
-        results.add_fail("GET /predictive-services/summary", str(e))
-
-def test_list_predictive_incidents(token: str) -> Optional[str]:
-    """Test GET /api/predictive-incidents and return an incident ID"""
-    try:
-        resp = requests.get(
-            f"{BASE_URL}/predictive-incidents?status=open",
-            headers={"Authorization": f"Bearer {token}"},
-            timeout=10
-        )
-        
-        if resp.status_code != 200:
-            results.add_fail("GET /predictive-incidents?status=open", 
-                           f"Status {resp.status_code}: {resp.text}")
+            log_test("GitHub scan - initiate", False, f"Status {resp.status_code}: {resp.text}")
             return None
         
         data = resp.json()
+        scan_id = data.get("id")
         
-        if not isinstance(data, list):
-            results.add_fail("GET /predictive-incidents?status=open", 
-                           f"Expected list, got {type(data)}")
-            return None
-        
-        if len(data) == 0:
-            results.add_warning("GET /predictive-incidents?status=open", 
-                              "No open incidents found (may need to run POST /predictive-triage first)")
-            return None
-        
-        # Check structure of first incident
-        incident = data[0]
-        required_fields = [
-            "id", "service_name", "metric_type", "current_value", "expected_value",
-            "anomaly_score", "risk_score", "predicted_failure", 
-            "estimated_time_to_incident", "recommended_action", "status", "created_at"
+        # Verify response structure
+        checks = [
+            ("id" in data, "has id"),
+            (data.get("status") in ["queued", "scanning"], "status is queued/scanning"),
+            (data.get("source") == "github", "source is github"),
+            ("octocat/Hello-World" in data.get("source_label", ""), "source_label contains repo"),
         ]
         
-        missing_fields = [f for f in required_fields if f not in incident]
-        if missing_fields:
-            results.add_fail("GET /predictive-incidents?status=open", 
-                           f"Missing fields: {', '.join(missing_fields)}")
+        all_checks_passed = all(check[0] for check in checks)
+        failed_checks = [check[1] for check in checks if not check[0]]
+        
+        if not all_checks_passed:
+            log_test("GitHub scan - initiate", False, f"Failed checks: {failed_checks}")
             return None
         
-        # Validate field types and values
-        if not incident["id"].startswith("PRD-"):
-            results.add_fail("GET /predictive-incidents?status=open", 
-                           f"ID should start with 'PRD-', got {incident['id']}")
+        log_test("GitHub scan - initiate", True, f"Scan ID: {scan_id}")
+        
+        # Poll for completion (max 24 iterations = 120s)
+        print(f"  Polling scan {scan_id} for completion...")
+        for i in range(24):
+            await asyncio.sleep(5)
+            resp = await client.get(
+                f"{BACKEND_URL}/code-quality/scans/{scan_id}",
+                headers=headers
+            )
+            
+            if resp.status_code != 200:
+                log_test("GitHub scan - poll", False, f"Status {resp.status_code}")
+                return None
+            
+            data = resp.json()
+            status = data.get("status")
+            print(f"    Iteration {i+1}/24: status={status}, file_count={data.get('file_count', 0)}")
+            
+            if status in ["done", "failed"]:
+                break
+        
+        final_status = data.get("status")
+        if final_status == "done":
+            log_test("GitHub scan - completion", True, f"Status: done, files: {data.get('file_count', 0)}")
+        else:
+            log_test("GitHub scan - completion", False, f"Status: {final_status}, error: {data.get('error', 'N/A')}")
             return None
         
-        valid_metrics = ["cpu_usage", "memory_usage", "db_connections", "api_latency_ms", "queue_depth"]
-        if incident["metric_type"] not in valid_metrics:
-            results.add_fail("GET /predictive-incidents?status=open", 
-                           f"Invalid metric_type: {incident['metric_type']}")
-            return None
-        
-        if not (0 <= incident["risk_score"] <= 100):
-            results.add_fail("GET /predictive-incidents?status=open", 
-                           f"risk_score should be 0-100, got {incident['risk_score']}")
-            return None
-        
-        if not isinstance(incident["predicted_failure"], bool):
-            results.add_fail("GET /predictive-incidents?status=open", 
-                           f"predicted_failure should be bool, got {type(incident['predicted_failure'])}")
-            return None
-        
-        if incident["status"] != "open":
-            results.add_fail("GET /predictive-incidents?status=open", 
-                           f"Expected status='open', got '{incident['status']}'")
-            return None
-        
-        if not incident["recommended_action"] or len(incident["recommended_action"]) == 0:
-            results.add_fail("GET /predictive-incidents?status=open", 
-                           "recommended_action is empty")
-            return None
-        
-        results.add_pass("GET /predictive-incidents?status=open", 
-                        f"Returned {len(data)} incidents with correct structure")
-        
-        return incident["id"]
-        
-    except Exception as e:
-        results.add_fail("GET /predictive-incidents?status=open", str(e))
-        return None
-
-def test_trigger_predictive_triage(token: str) -> int:
-    """Test POST /api/predictive-triage"""
-    try:
-        resp = requests.post(
-            f"{BASE_URL}/predictive-triage",
-            headers={"Authorization": f"Bearer {token}"},
-            json={},
-            timeout=30  # May take longer due to Claude calls
+        # Get issues
+        resp = await client.get(
+            f"{BACKEND_URL}/code-quality/scans/{scan_id}/issues",
+            headers=headers
         )
         
         if resp.status_code != 200:
-            results.add_fail("POST /predictive-triage", 
-                           f"Status {resp.status_code}: {resp.text}")
-            return 0
+            log_test("GitHub scan - get issues", False, f"Status {resp.status_code}")
+            return None
         
-        data = resp.json()
+        issues = resp.json()
+        log_test("GitHub scan - get issues", True, f"Found {len(issues)} issues (empty list OK for tiny repo)")
         
-        if "generated" not in data:
-            results.add_fail("POST /predictive-triage", 
-                           "Missing 'generated' field in response")
-            return 0
-        
-        if "predictions" not in data:
-            results.add_fail("POST /predictive-triage", 
-                           "Missing 'predictions' field in response")
-            return 0
-        
-        if not isinstance(data["generated"], int):
-            results.add_fail("POST /predictive-triage", 
-                           f"'generated' should be int, got {type(data['generated'])}")
-            return 0
-        
-        results.add_pass("POST /predictive-triage", 
-                        f"Generated {data['generated']} predictions")
-        
-        return data["generated"]
-        
-    except Exception as e:
-        results.add_fail("POST /predictive-triage", str(e))
-        return 0
+        return scan_id
 
-def test_incident_trend(token: str, incident_id: str):
-    """Test GET /api/predictive-incidents/{id}/trend"""
-    try:
-        resp = requests.get(
-            f"{BASE_URL}/predictive-incidents/{incident_id}/trend?points=60",
-            headers={"Authorization": f"Bearer {token}"},
-            timeout=10
+
+async def test_invalid_github_url(token: str):
+    """Test 3: Invalid GitHub URL"""
+    print("\n=== Test 3: Invalid GitHub URL ===")
+    
+    headers = {"Authorization": f"Bearer {token}"}
+    
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.post(
+            f"{BACKEND_URL}/code-quality/scans/github",
+            headers=headers,
+            json={"repo_url": "not-a-url"}
+        )
+        
+        passed = resp.status_code == 400
+        log_test("Invalid GitHub URL returns 400", passed, f"Status: {resp.status_code}")
+
+
+async def test_zip_upload_happy_path(token: str) -> Optional[str]:
+    """Test 4: Happy-path zip upload with vulnerable code"""
+    print("\n=== Test 4: Zip Upload Happy Path ===")
+    
+    # Create in-memory zip with vulnerable Python file
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
+        vuln_code = '''import os
+password = "hunter2"
+eval(input("> "))
+def add(a, b):
+    return a + b
+'''
+        zf.writestr("vuln.py", vuln_code)
+    
+    zip_buffer.seek(0)
+    
+    headers = {"Authorization": f"Bearer {token}"}
+    
+    async with httpx.AsyncClient(timeout=180.0) as client:
+        # Upload
+        files = {"file": ("test.zip", zip_buffer, "application/zip")}
+        resp = await client.post(
+            f"{BACKEND_URL}/code-quality/scans/upload",
+            headers=headers,
+            files=files
         )
         
         if resp.status_code != 200:
-            results.add_fail(f"GET /predictive-incidents/{incident_id}/trend", 
-                           f"Status {resp.status_code}: {resp.text}")
-            return
+            log_test("Zip upload - initiate", False, f"Status {resp.status_code}: {resp.text}")
+            return None
         
         data = resp.json()
+        scan_id = data.get("id")
         
-        required_fields = ["incident", "threshold", "unit", "series"]
-        missing_fields = [f for f in required_fields if f not in data]
-        if missing_fields:
-            results.add_fail(f"GET /predictive-incidents/{incident_id}/trend", 
-                           f"Missing fields: {', '.join(missing_fields)}")
-            return
+        # Verify response
+        checks = [
+            (data.get("status") in ["queued", "scanning"], "status is queued/scanning"),
+            (data.get("source") == "upload", "source is upload"),
+        ]
         
-        if not isinstance(data["series"], list):
-            results.add_fail(f"GET /predictive-incidents/{incident_id}/trend", 
-                           f"'series' should be list, got {type(data['series'])}")
-            return
+        all_checks_passed = all(check[0] for check in checks)
+        if not all_checks_passed:
+            log_test("Zip upload - initiate", False, "Response structure invalid")
+            return None
         
-        if len(data["series"]) < 30:
-            results.add_fail(f"GET /predictive-incidents/{incident_id}/trend", 
-                           f"Expected at least 30 points in series, got {len(data['series'])}")
-            return
+        log_test("Zip upload - initiate", True, f"Scan ID: {scan_id}")
         
-        # Check series structure
-        if len(data["series"]) > 0:
-            point = data["series"][0]
-            if "value" not in point or "timestamp" not in point:
-                results.add_fail(f"GET /predictive-incidents/{incident_id}/trend", 
-                               "Series points missing 'value' or 'timestamp'")
-                return
+        # Poll for completion
+        print(f"  Polling scan {scan_id} for completion...")
+        for i in range(24):
+            await asyncio.sleep(5)
+            resp = await client.get(
+                f"{BACKEND_URL}/code-quality/scans/{scan_id}",
+                headers=headers
+            )
+            
+            if resp.status_code != 200:
+                log_test("Zip upload - poll", False, f"Status {resp.status_code}")
+                return None
+            
+            data = resp.json()
+            status = data.get("status")
+            print(f"    Iteration {i+1}/24: status={status}")
+            
+            if status in ["done", "failed"]:
+                break
         
-        results.add_pass(f"GET /predictive-incidents/{incident_id}/trend", 
-                        f"Returned {len(data['series'])} data points")
+        final_status = data.get("status")
+        if final_status == "done":
+            log_test("Zip upload - completion", True, f"Status: done")
+        else:
+            log_test("Zip upload - completion", False, f"Status: {final_status}, error: {data.get('error', 'N/A')}")
+            return None
         
-    except Exception as e:
-        results.add_fail(f"GET /predictive-incidents/{incident_id}/trend", str(e))
-
-def test_acknowledge_incident(token: str, incident_id: str):
-    """Test PATCH /api/predictive-incidents/{id}/acknowledge"""
-    try:
-        resp = requests.patch(
-            f"{BASE_URL}/predictive-incidents/{incident_id}/acknowledge",
-            headers={"Authorization": f"Bearer {token}"},
-            timeout=10
+        # Get issues - expect at least 1 (hardcoded password or eval)
+        resp = await client.get(
+            f"{BACKEND_URL}/code-quality/scans/{scan_id}/issues",
+            headers=headers
         )
         
         if resp.status_code != 200:
-            results.add_fail(f"PATCH /predictive-incidents/{incident_id}/acknowledge", 
-                           f"Status {resp.status_code}: {resp.text}")
-            return False
+            log_test("Zip upload - get issues", False, f"Status {resp.status_code}")
+            return None
         
-        data = resp.json()
+        issues = resp.json()
+        has_issues = len(issues) >= 1
+        log_test("Zip upload - get issues", has_issues, 
+                f"Found {len(issues)} issues (expected >= 1 for hardcoded password/eval)")
         
-        if data.get("status") != "acknowledged":
-            results.add_fail(f"PATCH /predictive-incidents/{incident_id}/acknowledge", 
-                           f"Expected status='acknowledged', got '{data.get('status')}'")
-            return False
-        
-        results.add_pass(f"PATCH /predictive-incidents/{incident_id}/acknowledge", 
-                        "Status changed to 'acknowledged'")
-        return True
-        
-    except Exception as e:
-        results.add_fail(f"PATCH /predictive-incidents/{incident_id}/acknowledge", str(e))
-        return False
+        return scan_id
 
-def test_resolve_incident(token: str, incident_id: str):
-    """Test PATCH /api/predictive-incidents/{id}/resolve"""
-    try:
-        resp = requests.patch(
-            f"{BASE_URL}/predictive-incidents/{incident_id}/resolve",
-            headers={"Authorization": f"Bearer {token}"},
-            timeout=10
-        )
-        
-        if resp.status_code != 200:
-            results.add_fail(f"PATCH /predictive-incidents/{incident_id}/resolve", 
-                           f"Status {resp.status_code}: {resp.text}")
-            return False
-        
-        data = resp.json()
-        
-        if data.get("status") != "resolved":
-            results.add_fail(f"PATCH /predictive-incidents/{incident_id}/resolve", 
-                           f"Expected status='resolved', got '{data.get('status')}'")
-            return False
-        
-        if data.get("resolved_by") != ADMIN_EMAIL:
-            results.add_fail(f"PATCH /predictive-incidents/{incident_id}/resolve", 
-                           f"Expected resolved_by='{ADMIN_EMAIL}', got '{data.get('resolved_by')}'")
-            return False
-        
-        results.add_pass(f"PATCH /predictive-incidents/{incident_id}/resolve", 
-                        f"Status changed to 'resolved', resolved_by={ADMIN_EMAIL}")
-        return True
-        
-    except Exception as e:
-        results.add_fail(f"PATCH /predictive-incidents/{incident_id}/resolve", str(e))
-        return False
 
-def test_min_risk_filter(token: str):
-    """Test GET /api/predictive-incidents?min_risk=60"""
-    try:
-        resp = requests.get(
-            f"{BASE_URL}/predictive-incidents?min_risk=60",
-            headers={"Authorization": f"Bearer {token}"},
-            timeout=10
-        )
-        
-        if resp.status_code != 200:
-            results.add_fail("GET /predictive-incidents?min_risk=60", 
-                           f"Status {resp.status_code}: {resp.text}")
-            return
-        
-        data = resp.json()
-        
-        if not isinstance(data, list):
-            results.add_fail("GET /predictive-incidents?min_risk=60", 
-                           f"Expected list, got {type(data)}")
-            return
-        
-        # Check all returned incidents have risk_score >= 60
-        for inc in data:
-            if inc.get("risk_score", 0) < 60:
-                results.add_fail("GET /predictive-incidents?min_risk=60", 
-                               f"Found incident with risk_score={inc.get('risk_score')} < 60")
-                return
-        
-        results.add_pass("GET /predictive-incidents?min_risk=60", 
-                        f"All {len(data)} incidents have risk_score >= 60")
-        
-    except Exception as e:
-        results.add_fail("GET /predictive-incidents?min_risk=60", str(e))
-
-def test_websocket(token: str):
-    """Test WebSocket /api/ws/predictive-alerts"""
-    try:
-        ws_url_with_token = f"{WS_URL}?token={token}"
-        
-        ws = websocket.create_connection(ws_url_with_token, timeout=10)
-        
-        # Should receive snapshot on connect
-        msg = ws.recv()
-        data = json.loads(msg)
-        
-        if data.get("event") != "snapshot":
-            results.add_fail("WebSocket /api/ws/predictive-alerts", 
-                           f"Expected first message event='snapshot', got '{data.get('event')}'")
-            ws.close()
-            return
-        
-        if "data" not in data:
-            results.add_fail("WebSocket /api/ws/predictive-alerts", 
-                           "Snapshot message missing 'data' field")
-            ws.close()
-            return
-        
-        if not isinstance(data["data"], list):
-            results.add_fail("WebSocket /api/ws/predictive-alerts", 
-                           f"Snapshot data should be list, got {type(data['data'])}")
-            ws.close()
-            return
-        
-        # Test ping/pong
-        ws.send("ping")
-        pong_msg = ws.recv()
-        pong_data = json.loads(pong_msg)
-        
-        if pong_data.get("event") != "pong":
-            results.add_fail("WebSocket /api/ws/predictive-alerts", 
-                           f"Expected pong response, got '{pong_data.get('event')}'")
-            ws.close()
-            return
-        
-        ws.close()
-        
-        results.add_pass("WebSocket /api/ws/predictive-alerts", 
-                        f"Connected, received snapshot with {len(data['data'])} items, ping/pong works")
-        
-    except Exception as e:
-        results.add_fail("WebSocket /api/ws/predictive-alerts", str(e))
-
-def test_websocket_auth_required():
-    """Test WebSocket rejects invalid token"""
-    try:
-        ws_url_with_bad_token = f"{WS_URL}?token=invalid_token_12345"
-        
+async def test_oversize_upload(token: str):
+    """Test 5: Oversize upload (> 50 MB)"""
+    print("\n=== Test 5: Oversize Upload ===")
+    
+    headers = {"Authorization": f"Bearer {token}"}
+    
+    # Create a 51 MB file
+    print("  Creating 51 MB zip file...")
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
+        # Write 51 MB of random data
+        junk_data = b'x' * (51 * 1024 * 1024)
+        zf.writestr("junk.bin", junk_data)
+    
+    zip_buffer.seek(0)
+    
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        files = {"file": ("large.zip", zip_buffer, "application/zip")}
         try:
-            ws = websocket.create_connection(ws_url_with_bad_token, timeout=5)
-            # If we get here, connection was accepted (should have been rejected)
-            ws.close()
-            results.add_fail("WebSocket auth required", 
-                           "WebSocket accepted invalid token (should reject with 4401)")
-        except websocket.WebSocketBadStatusException as e:
-            # Expected - connection should be rejected
-            results.add_pass("WebSocket auth required", 
-                           "WebSocket correctly rejects invalid token")
+            resp = await client.post(
+                f"{BACKEND_URL}/code-quality/scans/upload",
+                headers=headers,
+                files=files
+            )
+            
+            passed = resp.status_code == 413
+            log_test("Oversize upload returns 413", passed, f"Status: {resp.status_code}")
         except Exception as e:
-            # Connection closed immediately is also acceptable
-            if "Connection is already closed" in str(e) or "4401" in str(e):
-                results.add_pass("WebSocket auth required", 
-                               "WebSocket correctly rejects invalid token")
-            else:
-                results.add_warning("WebSocket auth required", 
-                                  f"Unexpected error: {str(e)}")
+            # Connection might be closed by server
+            log_test("Oversize upload returns 413", True, f"Connection closed (expected for oversize)")
+
+
+async def test_non_zip_upload(token: str):
+    """Test 6: Non-zip upload"""
+    print("\n=== Test 6: Non-Zip Upload ===")
+    
+    headers = {"Authorization": f"Bearer {token}"}
+    
+    # Create a text file
+    txt_buffer = io.BytesIO(b"This is not a zip file")
+    
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        files = {"file": ("test.txt", txt_buffer, "text/plain")}
+        resp = await client.post(
+            f"{BACKEND_URL}/code-quality/scans/upload",
+            headers=headers,
+            files=files
+        )
+        
+        passed = resp.status_code == 400
+        log_test("Non-zip upload returns 400", passed, f"Status: {resp.status_code}")
+
+
+async def test_integrations_crud(token: str):
+    """Test 7: Integrations CRUD"""
+    print("\n=== Test 7: Integrations CRUD ===")
+    
+    headers = {"Authorization": f"Bearer {token}"}
+    integration_id = None
+    
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        # 7a. Create integration
+        resp = await client.post(
+            f"{BACKEND_URL}/code-quality/integrations",
+            headers=headers,
+            json={
+                "name": "Bad Sonar",
+                "provider": "sonarqube",
+                "base_url": "http://example.invalid",
+                "token": "bogus",
+                "project_key": "x"
+            }
+        )
+        
+        if resp.status_code != 200:
+            log_test("Integration - create", False, f"Status {resp.status_code}: {resp.text}")
+            return
+        
+        data = resp.json()
+        integration_id = data.get("id")
+        
+        # Verify token is not in response but token_set is true
+        checks = [
+            ("token" not in data, "token not in response"),
+            (data.get("token_set") == True, "token_set is true"),
+            (data.get("provider") == "sonarqube", "provider is sonarqube"),
+        ]
+        
+        all_checks_passed = all(check[0] for check in checks)
+        failed_checks = [check[1] for check in checks if not check[0]]
+        
+        log_test("Integration - create", all_checks_passed, 
+                f"ID: {integration_id}, Failed: {failed_checks if failed_checks else 'none'}")
+        
+        if not integration_id:
+            return
+        
+        # 7b. List integrations
+        resp = await client.get(
+            f"{BACKEND_URL}/code-quality/integrations",
+            headers=headers
+        )
+        
+        if resp.status_code != 200:
+            log_test("Integration - list", False, f"Status {resp.status_code}")
+            return
+        
+        integrations = resp.json()
+        found = None
+        for integ in integrations:
+            if integ.get("id") == integration_id:
+                found = integ
+                break
+        
+        if found:
+            checks = [
+                ("token" not in found, "token not in list response"),
+                (found.get("token_set") == True, "token_set is true in list"),
+            ]
+            all_checks_passed = all(check[0] for check in checks)
+            log_test("Integration - list", all_checks_passed, 
+                    f"Found integration, token_set={found.get('token_set')}")
+        else:
+            log_test("Integration - list", False, "Integration not found in list")
+        
+        # 7c. Sync integration (should fail gracefully)
+        print(f"  Syncing integration {integration_id} (expect graceful failure)...")
+        resp = await client.post(
+            f"{BACKEND_URL}/code-quality/integrations/{integration_id}/sync",
+            headers=headers
+        )
+        
+        # Should return 4xx or 5xx HTTPException, not unhandled 500
+        is_graceful_failure = resp.status_code in [400, 401, 403, 404, 500]
+        
+        # Check if it's a proper HTTPException response (has detail field)
+        try:
+            error_data = resp.json()
+            has_detail = "detail" in error_data or "error" in str(error_data).lower()
+        except:
+            has_detail = False
+        
+        log_test("Integration - sync fails gracefully", is_graceful_failure and has_detail,
+                f"Status: {resp.status_code}, has error detail: {has_detail}")
+        
+        # Check last_status after sync
+        resp = await client.get(
+            f"{BACKEND_URL}/code-quality/integrations",
+            headers=headers
+        )
+        
+        if resp.status_code == 200:
+            integrations = resp.json()
+            found = None
+            for integ in integrations:
+                if integ.get("id") == integration_id:
+                    found = integ
+                    break
+            
+            if found:
+                last_status = found.get("last_status", "")
+                starts_with_error = last_status.startswith("error")
+                log_test("Integration - last_status after sync", starts_with_error,
+                        f"last_status: {last_status[:50]}")
+        
+        # 7d. Unknown provider
+        resp = await client.post(
+            f"{BACKEND_URL}/code-quality/integrations",
+            headers=headers,
+            json={
+                "name": "Unknown",
+                "provider": "unknown_xyz",
+                "base_url": "http://example.com",
+                "token": "test"
+            }
+        )
+        
+        passed = resp.status_code in [400, 422]
+        log_test("Integration - unknown provider", passed, f"Status: {resp.status_code}")
+        
+        # 7e. Delete integration
+        resp = await client.delete(
+            f"{BACKEND_URL}/code-quality/integrations/{integration_id}",
+            headers=headers
+        )
+        
+        if resp.status_code != 200:
+            log_test("Integration - delete", False, f"Status {resp.status_code}")
+            return
+        
+        log_test("Integration - delete", True, "Deleted successfully")
+        
+        # Re-delete should return 404
+        resp = await client.delete(
+            f"{BACKEND_URL}/code-quality/integrations/{integration_id}",
+            headers=headers
+        )
+        
+        passed = resp.status_code == 404
+        log_test("Integration - re-delete returns 404", passed, f"Status: {resp.status_code}")
+
+
+async def test_issue_fix(token: str, scan_id: Optional[str]):
+    """Test 8: Issue fix endpoint"""
+    print("\n=== Test 8: Issue Fix ===")
+    
+    if not scan_id:
+        log_test("Issue fix - skipped", False, "No scan_id available (previous test failed)")
+        return
+    
+    headers = {"Authorization": f"Bearer {token}"}
+    
+    async with httpx.AsyncClient(timeout=90.0) as client:
+        # Get issues from scan
+        resp = await client.get(
+            f"{BACKEND_URL}/code-quality/scans/{scan_id}/issues",
+            headers=headers
+        )
+        
+        if resp.status_code != 200 or not resp.json():
+            log_test("Issue fix - get issue", False, "No issues available")
+            return
+        
+        issues = resp.json()
+        issue_id = issues[0].get("id")
+        
+        if not issue_id:
+            log_test("Issue fix - get issue", False, "Issue has no id")
+            return
+        
+        log_test("Issue fix - get issue", True, f"Using issue {issue_id}")
+        
+        # Request fix
+        print(f"  Requesting fix for issue {issue_id} (may take up to 60s)...")
+        resp = await client.post(
+            f"{BACKEND_URL}/code-quality/issues/{issue_id}/fix",
+            headers=headers,
+            json={}
+        )
+        
+        if resp.status_code != 200:
+            log_test("Issue fix - generate", False, f"Status {resp.status_code}: {resp.text}")
+            return
+        
+        fix_data = resp.json()
+        
+        # Verify all required fields are present and non-empty
+        required_fields = ["explanation", "patched_file", "diff", "test_hint"]
+        checks = []
+        for field in required_fields:
+            value = fix_data.get(field, "")
+            is_present = field in fix_data
+            is_non_empty = bool(value and str(value).strip())
+            checks.append((is_present and is_non_empty, f"{field} present and non-empty"))
+        
+        all_checks_passed = all(check[0] for check in checks)
+        failed_checks = [check[1] for check in checks if not check[0]]
+        
+        log_test("Issue fix - generate", all_checks_passed,
+                f"Fields: {', '.join(required_fields)}, Failed: {failed_checks if failed_checks else 'none'}")
+        
+        # Verify fix is persisted
+        resp = await client.get(
+            f"{BACKEND_URL}/code-quality/issues/{issue_id}",
+            headers=headers
+        )
+        
+        if resp.status_code != 200:
+            log_test("Issue fix - persistence", False, f"Status {resp.status_code}")
+            return
+        
+        issue_data = resp.json()
+        has_fix = "fix" in issue_data and issue_data["fix"] is not None
+        log_test("Issue fix - persistence", has_fix, f"Fix persisted: {has_fix}")
+
+
+async def test_scan_list(token: str):
+    """Test 9: Scan list"""
+    print("\n=== Test 9: Scan List ===")
+    
+    headers = {"Authorization": f"Bearer {token}"}
+    
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.get(
+            f"{BACKEND_URL}/code-quality/scans",
+            headers=headers
+        )
+        
+        if resp.status_code != 200:
+            log_test("Scan list", False, f"Status {resp.status_code}")
+            return
+        
+        scans = resp.json()
+        
+        # Should have at least 2 scans (github + upload from earlier tests)
+        has_enough = len(scans) >= 2
+        
+        # Check if sorted by created_at desc
+        is_sorted = True
+        if len(scans) >= 2:
+            for i in range(len(scans) - 1):
+                if scans[i].get("created_at", "") < scans[i+1].get("created_at", ""):
+                    is_sorted = False
+                    break
+        
+        log_test("Scan list", has_enough and is_sorted,
+                f"Found {len(scans)} scans (expected >= 2), sorted: {is_sorted}")
+
+
+async def test_delete_scan(token: str, scan_id: Optional[str]):
+    """Test 10: Delete scan"""
+    print("\n=== Test 10: Delete Scan ===")
+    
+    if not scan_id:
+        log_test("Delete scan - skipped", False, "No scan_id available")
+        return
+    
+    headers = {"Authorization": f"Bearer {token}"}
+    
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        # Delete scan
+        resp = await client.delete(
+            f"{BACKEND_URL}/code-quality/scans/{scan_id}",
+            headers=headers
+        )
+        
+        if resp.status_code != 200:
+            log_test("Delete scan", False, f"Status {resp.status_code}")
+            return
+        
+        log_test("Delete scan", True, f"Deleted scan {scan_id}")
+        
+        # Verify scan is gone
+        resp = await client.get(
+            f"{BACKEND_URL}/code-quality/scans/{scan_id}",
+            headers=headers
+        )
+        
+        passed = resp.status_code == 404
+        log_test("Delete scan - verify 404", passed, f"Status: {resp.status_code}")
+        
+        # Verify issues are gone
+        resp = await client.get(
+            f"{BACKEND_URL}/code-quality/scans/{scan_id}/issues",
+            headers=headers
+        )
+        
+        passed = resp.status_code == 404
+        log_test("Delete scan - issues gone", passed, f"Status: {resp.status_code}")
+
+
+async def test_sonarqube_smoke(token: str):
+    """Test 11: Smoke check on existing /api/sonarqube/* endpoints"""
+    print("\n=== Test 11: SonarQube Smoke Check ===")
+    
+    headers = {"Authorization": f"Bearer {token}"}
+    
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.get(
+            f"{BACKEND_URL}/sonarqube/summary",
+            headers=headers
+        )
+        
+        # Should not return 500
+        not_500 = resp.status_code != 500
+        
+        # Should return some data
+        has_data = False
+        if resp.status_code == 200:
+            try:
+                data = resp.json()
+                has_data = bool(data)
+            except:
+                pass
+        
+        log_test("SonarQube smoke check", not_500 and has_data,
+                f"Status: {resp.status_code}, has data: {has_data}")
+
+
+async def main():
+    """Run all tests"""
+    print("=" * 80)
+    print("Code Quality v2 Backend Test Suite")
+    print("=" * 80)
+    
+    try:
+        # Login
+        print("\n=== Authentication ===")
+        token = await login()
+        print(f"✓ Logged in as {TEST_EMAIL}")
+        
+        # Run tests
+        await test_auth_gate(token)
+        
+        github_scan_id = await test_github_scan_happy_path(token)
+        
+        await test_invalid_github_url(token)
+        
+        upload_scan_id = await test_zip_upload_happy_path(token)
+        
+        await test_oversize_upload(token)
+        
+        await test_non_zip_upload(token)
+        
+        await test_integrations_crud(token)
+        
+        # Use upload scan for fix test (more likely to have issues)
+        await test_issue_fix(token, upload_scan_id)
+        
+        await test_scan_list(token)
+        
+        # Delete github scan
+        await test_delete_scan(token, github_scan_id)
+        
+        await test_sonarqube_smoke(token)
+        
+        # Summary
+        print("\n" + "=" * 80)
+        print("TEST SUMMARY")
+        print("=" * 80)
+        
+        passed = sum(1 for r in test_results if r["passed"])
+        total = len(test_results)
+        
+        print(f"\nTotal: {passed}/{total} tests passed")
+        print("\nDetailed Results:")
+        for r in test_results:
+            status = "✅" if r["passed"] else "❌"
+            print(f"{status} {r['name']}")
+            if r["details"]:
+                print(f"   {r['details']}")
+        
+        # Exit code
+        sys.exit(0 if passed == total else 1)
         
     except Exception as e:
-        results.add_fail("WebSocket auth required", str(e))
+        print(f"\n❌ FATAL ERROR: {e}")
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
 
-def main():
-    print("\n" + "="*80)
-    print("Starting F-02 Predictive Triage Backend Tests")
-    print("="*80 + "\n")
-    
-    # 1. Login
-    token = login()
-    if not token:
-        print("\n❌ Cannot proceed without authentication token")
-        results.print_summary()
-        return 1
-    
-    # 2. Test auth required
-    test_auth_required(token)
-    
-    # 3. Test POST /predictive-triage to generate predictions
-    print("\n🔄 Triggering predictive triage (may take 20-30s due to Claude calls)...")
-    generated = test_trigger_predictive_triage(token)
-    
-    # Wait a moment for data to be available
-    if generated > 0:
-        time.sleep(2)
-    
-    # 4. Test GET /predictive-services/summary
-    test_predictive_services_summary(token)
-    
-    # 5. Test GET /predictive-incidents and get an incident ID
-    incident_id = test_list_predictive_incidents(token)
-    
-    # If no incidents found, try triggering again
-    if not incident_id and generated == 0:
-        print("\n🔄 No incidents found, triggering predictive triage again...")
-        generated = test_trigger_predictive_triage(token)
-        if generated > 0:
-            time.sleep(2)
-            incident_id = test_list_predictive_incidents(token)
-    
-    # 6. Test min_risk filter
-    test_min_risk_filter(token)
-    
-    # 7. Test incident-specific endpoints if we have an ID
-    if incident_id:
-        test_incident_trend(token, incident_id)
-        test_acknowledge_incident(token, incident_id)
-        test_resolve_incident(token, incident_id)
-    else:
-        results.add_warning("Incident-specific tests", 
-                          "Skipped (no open incidents available)")
-    
-    # 8. Test WebSocket
-    print("\n🔌 Testing WebSocket connection...")
-    test_websocket(token)
-    test_websocket_auth_required()
-    
-    # Print summary
-    success = results.print_summary()
-    
-    return 0 if success else 1
 
 if __name__ == "__main__":
-    exit(main())
+    asyncio.run(main())

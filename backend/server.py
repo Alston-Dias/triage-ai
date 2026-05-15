@@ -3298,6 +3298,13 @@ async def post_sonar_issue_chat(
 # ====================================================================================================
 
 
+# ====================================================================================================
+# Code Quality v2 — GitHub URL scans, .zip uploads, external scanner integrations (Claude-powered)
+# ====================================================================================================
+from code_quality_v2 import build_router as build_code_quality_v2_router  # noqa: E402
+
+api_router.include_router(build_code_quality_v2_router(db, get_current_user))
+
 app.include_router(api_router)
 
 app.add_middleware(
