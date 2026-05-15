@@ -10,7 +10,7 @@ import websocket
 from typing import Optional, Dict, Any
 
 # Backend URL from frontend/.env
-BASE_URL = "https://anomaly-detect-42.preview.emergentagent.com/api"
+BASE_URL = "https://code-snapshot-21.preview.emergentagent.com/api"
 WS_URL = "wss://anomaly-detect-42.preview.emergentagent.com/api/ws/predictive-alerts"
 
 # Test credentials from /app/memory/test_credentials.md
