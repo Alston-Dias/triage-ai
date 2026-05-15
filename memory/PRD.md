@@ -69,3 +69,13 @@ Predictive Triage. Both features must coexist after the merge.
 ## Next tasks
 1. (Optional) Push resolved branch back via "Save to GitHub" – user choice.
 2. (Optional) Address the P2 backlog items above before next feature work.
+
+## Code Quality v2 (May 2026)
+
+- **GitHub URL scan**: clone a public or private (PAT-injected) repo, AI-analyze up to 30 source files with Claude Sonnet 4.5 in the background, store SonarQube-style issues per scan.
+- **.zip upload scan**: 50 MB / 2000 file cap, same analyzer pipeline.
+- **External scanner integrations**: SonarQube, SonarCloud, Snyk, GitHub Advanced Security, Semgrep Cloud, and a generic Custom provider. Each integration is enable/disable-able and deletable. Sync pulls live issues from the external dashboard.
+- **AI Fix**: per-issue, Claude returns `{explanation, patched_file, unified diff, test_hint}`. If the user gives a GitHub repo+PAT, we auto-fetch the affected file so the patched output is real.
+- **Demo seeder**: `POST /api/code-quality/demo/seed?reset=true|false` populates 3 integrations (one disabled), 5 scans, 17 issues, and one pre-baked AI fix for client demos.
+
+Implemented in `backend/code_quality_v2.py` (router mounted at `/api/code-quality/*`) and `frontend/src/components/CodeQualityScansPanel.jsx`. Existing static SonarQube mock is preserved underneath, clearly labeled "Demo project · static sonarqube dashboard".
