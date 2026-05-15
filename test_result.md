@@ -261,6 +261,31 @@ backend:
           All test scenarios from review request verified and working.
 
 frontend:
+  - task: "AI Remediation Copilot on Code Quality page"
+    implemented: true
+    working: true
+    file: "frontend/src/components/IssueAIChat.jsx, frontend/src/components/IssueDetailSheet.jsx, frontend/src/pages/CodeQuality.jsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: |
+          Comprehensive end-to-end testing completed successfully. All features working:
+          ✅ Code Quality page loads with metrics (Bugs, Vulnerabilities, Code Smells, Coverage)
+          ✅ Issues list displays 4 rows correctly
+          ✅ Issue detail drawer opens with title, badges, description, suggested fix
+          ✅ AI Remediation Copilot toggle expands chat UI
+          ✅ All 5 quick-intent chips present and functional (Explain issue, Suggest fix, Refactor, Severity, Best practices)
+          ✅ "Explain issue" chip triggers assistant response with relevant content
+          ✅ "Suggest fix" chip provides code fix suggestions
+          ✅ Free-form questions work correctly
+          ✅ Chat history persists across drawer close/reopen (5 messages maintained)
+          ✅ No console errors detected
+          ⚠️ Minor: 3 network errors for Cloudflare RUM (non-critical, doesn't affect functionality)
+          Note: AI responses show "mocked responses" label as expected for testing environment.
+
   - task: "F-01 DeploymentCard component"
     implemented: true
     working: "NA"
@@ -383,6 +408,139 @@ frontend:
           the AI Triage Summary, with the top match expanded and the rest in a
           collapsible <details> block.
 
+  - task: "F-02 Enhanced SonarQube dashboard (filters, search, summary bar, AI fix, comments, WONT_FIX)"
+    implemented: true
+    working: true
+    file: "backend/server.py, frontend/src/pages/CodeQuality.jsx, frontend/src/components/IssueDetailSheet.jsx, frontend/src/components/IssueAIChat.jsx, frontend/src/components/FixPreviewModal.jsx, frontend/src/components/SonarSummaryBar.jsx, frontend/src/hooks/useSonarQubeData.js, frontend/src/lib/api.js, frontend/src/lib/severity.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          F-02 enhanced Code Quality dashboard shipped. Backend additions in
+          backend/server.py:
+            • SONAR_ALLOWED_STATUSES extended with "WONT_FIX"
+            • GET /api/sonarqube/issues now supports filters
+              ?severity=&bucket=&type=&status=&assignee=&q=
+              and returns extra fields: total_unfiltered, buckets {BLOCKER/HIGH/
+              MEDIUM/LOW}, technical_debt_minutes
+            • POST /api/sonarqube/issues/{key}/generate-fix → deterministic mock
+              returning { explanation, unified_diff, confidence (0..1),
+              safe_to_apply, language, source:"mock", issue_key, generated_at }
+              Body of _generate_mock_sonar_fix() is the swap-point for a real LLM.
+            • GET /api/sonarqube/issues/{key}/comments
+              POST /api/sonarqube/issues/{key}/comments — author from JWT,
+              persisted in db.sonarqube_comments.
+            • GET /api/sonarqube/trend?days=7 — deterministic daily series for
+              bugs / vulnerabilities / code_smells / total. Seeded by date so it
+              is stable across reloads.
+            • GET /api/sonarqube/config → {source: "mock"|"live", base_url,
+              project_key, has_token}. Reads SONAR_BASE_URL / SONAR_TOKEN /
+              SONAR_PROJECT_KEY from env (full editable Settings UI deferred).
+            • SONAR_AI_INTENTS extended with 5 new canonical codes
+              (explain_rule, generate_fix, alternative_fix, write_test,
+              pr_description). Old codes (explain, suggest_fix, refactor,
+              severity, best_practices) still accepted and aliased so persisted
+              chat history keeps rendering. write_test + pr_description added
+              their own dedicated mock branches.
+          Frontend additions (no new npm deps):
+            • lib/severity.js (NEW) — severityBucket() + colour/label maps,
+              shared with the backend bucket table.
+            • components/SonarSummaryBar.jsx (NEW) — strip with Blockers/High/
+              Medium/Low counts, total tech debt, 7-day inline-SVG sparkline,
+              MOCK/LIVE source badge.
+            • components/FixPreviewModal.jsx (NEW) — dialog with unified-diff
+              viewer (red/green lines), confidence pill, safe-to-apply badge,
+              Copy patch + Apply Fix (clipboard, console-logs the patch).
+            • pages/CodeQuality.jsx — search input + 4 filter dropdowns
+              (bucket / type / status / assignee), Clear button, client-side
+              filtering (snappy UX). Renders SonarSummaryBar above metrics and
+              IssueItem now shows the simplified bucket badge alongside the raw
+              Sonar severity.
+            • components/IssueDetailSheet.jsx — adds simplified bucket badge,
+              comments thread with input + send (Enter to submit), WONT_FIX
+              status pill, and "Generate AI Fix" button that opens FixPreview.
+              Mounts FixPreviewModal at the drawer root.
+            • components/IssueAIChat.jsx — 5 new chip set (Explain Rule /
+              Generate Fix / Alternative Fix / Write Test / PR Description).
+              Old intent codes still accepted by backend, so any persisted
+              history continues to render.
+            • lib/api.js — new helpers: generateSonarFix(),
+              fetchSonarIssueComments(), addSonarIssueComment(),
+              fetchSonarTrend(), fetchSonarConfig().
+            • hooks/useSonarQubeData.js — also fetches trend + config in the
+              same Promise.all and exposes them, so the dashboard renders the
+              sparkline + LIVE/MOCK badge without a second render.
+          Backward compat: pre-existing GET /sonarqube/issues response shape is
+          a strict superset; old clients keep working. Existing chat history
+          renders unchanged.
+
+      - working: true
+        agent: "testing"
+        comment: |
+          ✅ F-02 BACKEND VERIFICATION COMPLETE - All 12 tests passed successfully.
+          
+          Comprehensive testing of all F-02 SonarQube endpoints completed:
+          
+          1. ✅ GET /api/sonarqube/issues - Verified new fields (buckets, technical_debt_minutes, 
+             total_unfiltered) are present and correctly structured. Buckets: BLOCKER=0, HIGH=0, 
+             MEDIUM=1, LOW=3. Technical debt: 50 minutes.
+          
+          2. ✅ GET /api/sonarqube/issues?bucket=MEDIUM - Filtering works correctly. All returned 
+             issues have MAJOR severity (maps to MEDIUM bucket). Verified total <= total_unfiltered.
+          
+          3. ✅ GET /api/sonarqube/issues?bucket=HIGH - Correctly returns 0 issues (mock data has 
+             no BLOCKER/CRITICAL severity issues, as expected).
+          
+          4. ✅ GET /api/sonarqube/issues?q=conditional - Search filter works. All returned issues 
+             contain "conditional" in searchable fields.
+          
+          5. ✅ GET /api/sonarqube/issues?status=OPEN&type=CODE_SMELL - Combined filters work with 
+             AND logic. All returned issues match both criteria.
+          
+          6. ✅ GET /api/sonarqube/issues?assignee=unassigned - Assignee filter works. All returned 
+             issues have no assignee.
+          
+          7. ✅ POST /api/sonarqube/issues/{key}/generate-fix - Returns all required fields 
+             (explanation, unified_diff, confidence, safe_to_apply, language, issue_key, 
+             generated_at, source). Unified diff has correct format (starts with "--- a/", 
+             contains "+++ b/" and "@@"). Confidence is float 0..1. Source is "mock". 
+             Returns 404 for unknown issue_key. Returns 401 without auth token.
+          
+          8. ✅ POST /api/sonarqube/issues/{key}/comments - Comment creation works. Author email 
+             from JWT is correctly set. Returns 400 for empty text. Returns 401 without auth.
+          
+          9. ✅ GET /api/sonarqube/issues/{key}/comments - Comment retrieval works. Comments are 
+             returned in correct order. Returns 401 without auth.
+          
+          10. ✅ GET /api/sonarqube/trend?days=7 - Returns exactly 7 series rows. Each row has 
+              date, bugs, vulnerabilities, code_smells, total (all int >= 0). Total equals sum 
+              of bugs + vulnerabilities + code_smells. Returns 422 for days=0 and days=31 
+              (validation working). Default (no param) returns 7 rows.
+          
+          11. ✅ GET /api/sonarqube/config - Returns all required fields (source, base_url, 
+              project_key, has_token). Source is "mock", base_url is null, project_key is 
+              "triageai", has_token is false. Requires auth.
+          
+          12. ✅ POST /api/sonarqube/issues/{key}/chat - NEW INTENTS: All 5 new intents work 
+              correctly (write_test, pr_description, explain_rule, generate_fix, alternative_fix). 
+              Replies are non-empty and do not contain "(no mocked reply)" sentinel. Intent is 
+              echoed in assistant_message. write_test reply contains "test", pr_description 
+              reply contains "PR description".
+          
+          13. ✅ POST /api/sonarqube/issues/{key}/chat - OLD INTENTS (BACKWARD COMPAT): All 5 old 
+              intents still work correctly (explain, suggest_fix, refactor, severity, 
+              best_practices). Replies are non-empty and do not contain "(no mocked reply)" 
+              sentinel.
+          
+          14. ✅ PATCH /api/sonarqube/issues/{key}/status - WONT_FIX status update works. Status 
+              is persisted and can be verified via GET. Status was reset to OPEN after test to 
+              keep state clean.
+          
+          All F-02 backend endpoints are working correctly. No issues found.
+
 metadata:
   created_by: "main_agent"
   version: "1.0"
@@ -484,3 +642,194 @@ agent_communication:
       
       All REST API integrations verified working. UI/UX consistent with app theme.
       Screenshots captured for evidence.
+  - agent: "main"
+    message: |
+      F-02 fully shipped and verified end-to-end.
+      ✅ Backend: 14/14 endpoint assertions PASSED (deep_testing_backend_v2).
+      ✅ Frontend: 7/7 UI scenarios PASSED (auto_frontend_testing_agent):
+          1. Page renders with summary bar (Blockers 0 · High 0 · Medium 1 · Low 3 ·
+             tech debt 50min · 7-day sparkline · MOCK badge).
+          2. Search + 4 filters (bucket/type/status/assignee) + Clear button work.
+          3. Every row shows the simplified High/Medium/Low badge next to the raw severity.
+          4. Detail drawer: bucket badge in header, comments persist across close/reopen,
+             WONT_FIX status transition works.
+          5. Generate AI Fix modal: 90% confidence, unified diff with +/-/@@,
+             explanation, Copy + Apply (toast + console log).
+          6. New 5 chat chips (Explain Rule, Generate Fix, Alternative Fix,
+             Write Test, PR Description) — old chips gone, all replies tagged with
+             correct intent, history persists.
+          7. Empty state shown when no rows match filters.
+      Only minor non-blocking note: Radix DialogContent a11y warning (missing
+      DialogDescription) — purely a console nit, no UX impact.
+
+      F-02 backend verification plan (preserved for history):
+
+        1) GET /api/sonarqube/issues  — defaults still work, response now
+           includes `buckets` (BLOCKER/HIGH/MEDIUM/LOW), `technical_debt_minutes`
+           and `total_unfiltered`.
+        2) GET /api/sonarqube/issues?bucket=MEDIUM&type=CODE_SMELL — filters
+           combine with AND. Try ?q=conditional, ?status=OPEN,
+           ?assignee=unassigned. Bucket=HIGH currently returns 0 (mock data
+           has no BLOCKER/CRITICAL) and that is correct.
+        3) POST /api/sonarqube/issues/AYxyz123/generate-fix — must return
+           {explanation, unified_diff, confidence (0..1), safe_to_apply,
+           language, issue_key, generated_at, source: "mock"}.
+           Unified diff must contain `--- a/`, `+++ b/`, `@@`, and have at
+           least one `+`/`-` line. 404 on unknown key.
+        4) POST /api/sonarqube/issues/AYxyz123/comments {text}  — non-empty
+           text required (400 on empty), author taken from JWT, returns
+           the persisted doc. GET ../comments returns ordered list.
+        5) GET /api/sonarqube/trend?days=7 — returns 7 daily rows with
+           bugs/vulnerabilities/code_smells/total non-negative ints.
+           Out-of-range days clamped (try ?days=0 → 422, ?days=31 → 422).
+        6) GET /api/sonarqube/config — `source` is "mock" by default (no
+           SONAR_BASE_URL/SONAR_TOKEN in env), `project_key` defaults to
+           "triageai", `has_token` is false.
+        7) Chat — new intents: POST /api/sonarqube/issues/AYxyz123/chat with
+           intent in {explain_rule, generate_fix, alternative_fix, write_test,
+           pr_description}. Old intents (explain, suggest_fix, refactor,
+           severity, best_practices) must STILL be accepted and produce
+           sensible replies.
+        8) PATCH /api/sonarqube/issues/AYxyz123/status {status:"WONT_FIX"} —
+           must be accepted now (was rejected before F-02).
+
+      Do NOT test frontend yet — user will be asked separately after backend
+      passes. Skip endpoints already covered in earlier F-01 tests.
+  
+  - agent: "testing"
+    message: |
+      ✅ AI Remediation Copilot testing COMPLETE - All features working perfectly.
+      
+      Tested the complete flow on /code-quality page:
+      1. Page loads with all metric cards and 4 issue rows
+      2. Issue detail drawer opens correctly with all sections
+      3. AI Remediation Copilot toggle expands chat UI
+      4. All 5 quick-intent chips functional (Explain, Suggest fix, Refactor, Severity, Best practices)
+      5. Assistant responses contain relevant content (verified "Refactor nested conditional in IncidentChat" text)
+      6. Free-form questions work correctly
+      7. Chat history persists across drawer close/reopen
+      
+      No critical issues found. Minor Cloudflare RUM network errors are non-functional.
+      AI responses correctly labeled as "mocked responses" in UI.
+
+  - agent: "testing"
+    message: |
+      ✅ F-02 BACKEND VERIFICATION COMPLETE - ALL 12 TESTS PASSED
+      
+      Executed comprehensive backend test suite for F-02 SonarQube enhancements.
+      All endpoints working correctly with no issues found.
+      
+      VERIFIED ENDPOINTS:
+      1. ✅ GET /api/sonarqube/issues - New fields (buckets, technical_debt_minutes, 
+         total_unfiltered) present and correct
+      2. ✅ GET /api/sonarqube/issues?bucket=MEDIUM - Bucket filtering works, all issues 
+         have MAJOR severity
+      3. ✅ GET /api/sonarqube/issues?bucket=HIGH - Correctly returns 0 (no BLOCKER/CRITICAL 
+         in mock data)
+      4. ✅ GET /api/sonarqube/issues?q=conditional - Search filter works
+      5. ✅ GET /api/sonarqube/issues?status=OPEN&type=CODE_SMELL - Combined filters work 
+         with AND logic
+      6. ✅ GET /api/sonarqube/issues?assignee=unassigned - Assignee filter works
+      7. ✅ POST /api/sonarqube/issues/{key}/generate-fix - Returns correct structure with 
+         unified_diff, confidence (0..1), safe_to_apply, etc. 404 for unknown key, 401 
+         without auth
+      8. ✅ POST /api/sonarqube/issues/{key}/comments - Comment creation works, author from 
+         JWT, 400 for empty text, 401 without auth
+      9. ✅ GET /api/sonarqube/issues/{key}/comments - Comment retrieval works, 401 without auth
+      10. ✅ GET /api/sonarqube/trend?days=7 - Returns 7 rows with correct structure, 422 
+          for invalid days (0, 31), default returns 7
+      11. ✅ GET /api/sonarqube/config - Returns source="mock", base_url=null, 
+          project_key="triageai", has_token=false
+      12. ✅ POST /api/sonarqube/issues/{key}/chat - NEW INTENTS: All 5 new intents work 
+          (write_test, pr_description, explain_rule, generate_fix, alternative_fix). 
+          Replies non-empty, no "(no mocked reply)" sentinel
+      13. ✅ POST /api/sonarqube/issues/{key}/chat - OLD INTENTS: All 5 old intents still 
+          work (explain, suggest_fix, refactor, severity, best_practices) - backward 
+          compatibility confirmed
+      14. ✅ PATCH /api/sonarqube/issues/{key}/status - WONT_FIX status update works and 
+          persists
+      
+      All F-02 backend functionality verified and working correctly.
+
+  - agent: "testing"
+    message: |
+      ✅ F-02 FULL UI VERIFICATION COMPLETE - ALL 7 SCENARIOS PASSED
+      
+      Executed comprehensive UI testing of F-02 enhanced SonarQube Code Quality dashboard.
+      All features working correctly with no critical issues found.
+      
+      SCENARIO 1 — Page renders: ✅ PASS
+      • Summary bar present with all 5 stat blocks (Blockers: 0, High: 0, Medium: 1, Low: 3)
+      • Technical debt displays correctly: "50min"
+      • Sparkline SVG with polyline rendering 7-day trend
+      • Source badge shows "MOCK" as expected
+      • No "Failed to fetch code quality data" error banner
+      
+      SCENARIO 2 — Filters + search: ✅ PASS
+      • Filter strip contains all 5 elements (search input, bucket, type, status, assignee)
+      • Initial 4 issue rows displayed
+      • Search "nested" correctly filters to 1 of 4 rows
+      • Header updates to "Issues (1 of 4)"
+      • Clear button restores all 4 rows
+      • Bucket filter "Medium" shows only Medium-badged rows (1 row)
+      • Status filter "OPEN" shows 4 rows (all are OPEN)
+      
+      SCENARIO 3 — Issue row badges: ✅ PASS
+      • All 4 rows have simplified bucket badges
+      • Row 1: Low, Row 2: Low, Row 3: Low, Row 4: Medium
+      • Badges appear alongside existing severity badges (MAJOR/MINOR)
+      
+      SCENARIO 4 — Detail drawer + WONT_FIX + comments: ✅ PASS
+      • Drawer opens on issue click
+      • BOTH badges visible in header: severity (MINOR) + bucket badge (Low)
+      • Comments section functional
+      • New comment added successfully with unique text "F-02 verify 1778840132"
+      • Author correctly shown as "Admin User" / "admin@triage.ai"
+      • Comment persists after drawer close/reopen (3 total comments)
+      • WONT_FIX status change works - badge updates to "WONT FIX"
+      • Row reflects WONT_FIX status after drawer close
+      • Status successfully reset to OPEN
+      
+      SCENARIO 5 — Generate AI Fix modal: ✅ PASS
+      • "Generate AI Fix" button present next to AI Remediation Copilot
+      • Modal opens within ~5 seconds
+      • Confidence badge: "Confidence: 90%"
+      • Safety badge: "Safe to apply"
+      • Diff viewer contains unified diff with +, -, and @@ lines
+      • Explanation present (728 characters)
+      • "mock" badge visible in modal header
+      • Copy patch button functional
+      • Apply Fix button clicked successfully (console logs patch)
+      
+      SCENARIO 6 — New AI chat chips + history: ✅ PASS
+      • AI Remediation Copilot toggle expands chat panel
+      • All 5 NEW chips present and functional:
+        - Explain Rule ✅
+        - Generate Fix ✅
+        - Alternative Fix ✅
+        - Write Test ✅
+        - PR Description ✅
+      • OLD chips (explain, suggest_fix, etc.) NOT present - successfully replaced
+      • "Write Test" chip: assistant reply contains "test" + intent badge "write_test"
+      • "PR Description" chip: assistant reply contains PR content + intent badge "pr_description"
+      • Free-form question "can you explain the rule?" works with auto-detected intent "explain_rule"
+      • Chat history persists: 26 assistant messages maintained after drawer close/reopen
+      
+      SCENARIO 7 — No-issue empty state: ✅ PASS
+      • Search "zzzzz_no_match" displays "No issues match the current filters."
+      • 0 rows visible
+      • Clear button restores all 4 rows
+      
+      CONSOLE LOGS:
+      • Only accessibility warnings for DialogContent missing Description (minor, non-functional)
+      • Console log confirms Apply Fix functionality: "[FixPreview] would apply patch for AYxyz123"
+      
+      NETWORK ERRORS:
+      • Only Cloudflare RUM errors (non-critical, doesn't affect functionality)
+      
+      MINOR OBSERVATIONS (not failures):
+      • Copy button text change to "Copied" may have timing issue (functionality works)
+      • Accessibility warnings for modal descriptions (doesn't affect UX)
+      
+      All F-02 UI features verified and working correctly. No critical issues found.
+

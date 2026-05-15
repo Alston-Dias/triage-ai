@@ -1,86 +1,71 @@
-# TriageAI — Product Requirements Document
+# TriageAI – PRD
 
-## Original Problem Statement
-Build the TriageAI application as described in the spec PDF — an AI-Powered Incident Triage Engine for Cloud Operations. Stack: React (frontend) + FastAPI (backend).
+## Original problem statement
+Resolve merge conflicts for PR #4 of `Alston-Dias/triage-ai`
+(<https://github.com/Alston-Dias/triage-ai/pull/4>) and make sure that nothing
+breaks. Test everything.
+
+The PR (`simransirsat:sonar-feature` → `Alston-Dias:main`) adds a SonarQube
+Code Quality dashboard with AI chat. `main` had meanwhile gained F-02
+Predictive Triage. Both features must coexist after the merge.
 
 ## Architecture
-- **Frontend**: React 19 + react-router-dom 7 + Tailwind + lucide-react + recharts + sonner
-- **Backend**: FastAPI + motor (async MongoDB) + emergentintegrations (Claude Sonnet 4.5)
-- **DB**: MongoDB collections — `users`, `alerts`, `incidents`, `triage_results`, `incident_chats`, `sources`
-- **Auth**: JWT Bearer (24h), bcrypt hashed passwords, 4 seeded demo users
-- **AI**: Claude Sonnet 4.5 (`claude-sonnet-4-5-20250929`) via Emergent Universal LLM Key — used for both batch triage and per-incident chatbot
+- **Backend** — FastAPI single-file app (`/app/backend/server.py`, 3.3k LOC).
+  Routes registered under `/api`. MongoDB via motor. Claude via
+  `emergentintegrations`. WebSocket `/api/ws/predictive-alerts`.
+- **Frontend** — React 18 + CRA + craco + Tailwind + lucide-react.
+  Routes: `/` (Live Triage), `/incidents`, `/incidents/:id`, `/predictive`,
+  `/analytics`, `/code-quality`, `/settings`.
+- **Auth** — JWT (HS256, 24h), bcrypt password hashes. 4 seeded users.
 
-## User Personas
-- **Admin** — full access including source mgmt
-- **On-call SRE** — primary user; picks up incidents, drives resolution, uses AI copilot
-- **Viewer** — read-only
+## Conflicts resolved in this merge
+| File | Strategy |
+| ---- | -------- |
+| `.emergent/emergent.yml` | Kept HEAD metadata |
+| `.gitignore` | Deduped both sides into a clean canonical list |
+| `backend/server.py` | Kept HEAD imports (WebSocket needed) + **both** F-02 Predictive block and SonarQube block |
+| `backend_test.py` | Kept HEAD's F-02 tests; PR's Sonar tests preserved as `backend_test_sonar.py` |
+| `frontend/src/App.js` | Imported and routed both `PredictiveDashboard` and `CodeQuality` |
+| `frontend/src/components/Layout.jsx` | Merged icon imports (`TrendingUp` + `Code2`); NAV already had both entries |
+| `test_result.md` | Kept full history blocks from both sides |
 
-## Implemented (current)
-### Iteration 1 (2026-05-10)
-- Alert ingestion / list / resolve / simulate endpoints
-- Claude Sonnet 4.5 triage → priority, blast radius, MTTR, root causes (ranked, with confidence + supporting alerts), 3-phase remediation playbook with CLI commands, noise filter
-- Incidents list + detail
-- Analytics dashboard (totals, by-source, MTTR trend 7d, severity breakdown, top incidents)
-- Settings page
-- Terminal/SRE control-room dark UI per design guidelines (Chivo + JetBrains Mono)
-- Sample data seeder
+## Features (post-merge)
+### F-02 Predictive Triage (HEAD)
+- 5 monitored services × 5 metric types, 4h synthetic history seeded in `db.metrics`.
+- IsolationForest anomaly detection → risk score 0–100 + ETA + Claude recommendation.
+- REST: `GET /api/predictive-services/summary`, `GET /api/predictive-incidents`,
+  `POST /api/predictive-triage`, `GET .../trend`, `PATCH .../acknowledge`,
+  `PATCH .../resolve`.
+- WebSocket: `wss://.../api/ws/predictive-alerts?token=<JWT>` — emits `snapshot`
+  on connect and `prediction.new` on each run.
 
-### Iteration 2 (2026-05-10)
-- **JWT auth** — login screen with demo accounts, AuthProvider, protected routes, axios Bearer interceptor, logout
-- **Monitoring sources CRUD** — add/list/toggle/delete sources from Settings (cloudwatch, datadog, pagerduty, grafana, prometheus, custom). 4 defaults seeded on startup.
-- **Per-incident AI chatbot** — Claude Sonnet 4.5 with full incident context (alerts + triage), persisted history in `incident_chats`, locked when incident is resolved
-- **Incident workflow** — pickup (auto-assigns + status→in_progress), add collaborators, post updates, mark resolved (closes linked alerts, locks chat). Activity log timeline.
-- **My Incidents tabs** — mine / others / all on Incidents page
-- **Unattended-alert SLA** — `/api/alerts/unattended` (>5 days), `UnattendedBanner` polls every 60s, demo "Age Alerts" button to fast-forward 3 alerts
+### SonarQube Code Quality + AI Chat (PR)
+- Mock SonarQube dataset (4 issues across 4 components).
+- REST: `GET /api/sonarqube/summary`, `GET /api/sonarqube/issues`,
+  `GET .../{key}`, `POST .../{key}/claim`, `POST .../{key}/assign`,
+  `PATCH .../{key}/status`, `GET /api/sonarqube/quality-gate`,
+  `POST .../{key}/generate-fix`, `GET|POST .../{key}/comments`,
+  `POST .../{key}/chat` (5 intents: Explain Rule, Generate Fix,
+  Alternative Fix, Write Test, PR Description).
 
-## Test Credentials
-See `/app/memory/test_credentials.md`. 4 users seeded: admin, sre1, sre2, viewer.
+## Test status (iteration_8)
+- Backend pytest: **27/27 PASS** (`/app/backend/tests/test_post_merge_pr4.py`).
+- Frontend Playwright: **100%** of critical post-merge flows verified.
+- **No regressions** introduced by the merge.
 
-### Iteration 4 (2026-05-11) — Notifications + Theme Toggle
-- **Notification Channels (admin-only CRUD)** — Slack, Microsoft Teams, Discord, Generic webhook, Email via Resend
-- **Configurable triggers per channel** — `incident_created` (P1/P2), `sla_breach` (>5d), `incident_resolved`
-- **Dispatcher** — `dispatch_event()` fires all enabled matching channels concurrently via `asyncio.create_task`; per-call status saved to channel (`last_status`) + audit log (`notification_log`)
-- **SLA dedup** — first time an unattended alert is detected it dispatches a breach event; subsequent calls skip it via per-alert marker
-- **RBAC** — `require_admin` dependency gates create/update/delete/test
-- **Theme toggle** — Sun/Moon button in header; light theme overrides via `html[data-theme="light"]` CSS rules; persisted to `localStorage` (`triage_theme`); default dark
+## What's been implemented
+- 2026-05-15 — Resolved 7 merge conflicts from PR #4; both Predictive Triage
+  and SonarQube Code Quality features verified working end-to-end.
 
-### Iteration 5 (2026-05-12) — F-01 Deployment Change Correlation
-- **`cicd_tools` & `deployment_events` collections** — Fernet-encrypted API tokens (JWT_SECRET-derived key), service watchlists, sync counters.
-- **Adapter pattern** — `BaseCICDAdapter` interface with real `GitHubActionsAdapter` (workflow_runs + commit/files via GitHub REST), `MockAdapter` (synthetic deployments for demo), and stubs for GitLab/CircleCI/ArgoCD.
-- **`DeploymentCorrelator`** — confidence = 0.5·time + 0.35·service_match + 0.15·file_relevance. Labels: high ≥ 0.7, medium ≥ 0.4, else low.
-- **Endpoints** — `GET/POST/PATCH/DELETE /api/cicd/tools` (admin CRUD), `POST /api/cicd/tools/{id}/test`, `POST /api/cicd/sync-all`, `GET /api/cicd/deployments`, `GET /api/incidents/{id}/deployments?window_minutes&confidence_min`.
-- **Background sync** — asyncio loop calls `CICDToolService.sync_all()` every 60s; idempotent via `external_id`.
-- **Claude prompt enrichment** — `/api/triage` correlates deployments before LLM call and prepends a `RECENT DEPLOYMENTS` block to the user message when confidence ≥ 0.3; response now includes a `deployments` array.
-- **Frontend** — `DeploymentCard` rendered at top of Triage Panel + Incident Detail with confidence badge, deployer avatar, time delta, top-3 changed files (click to copy / expand for diff), PR + CI links, one-click Rollback button (clipboard).
-- **Settings → CI/CD Integrations** — admin UI to register/edit/test/toggle tools per provider type; auto-seeds one Mock tool on first startup so the full flow demos without real credentials.
+## Backlog / Future
+- (P2) Split `server.py` into routers (`routers/predictive.py`,
+  `routers/sonarqube.py`) — file is now 3.3k lines.
+- (P2) Tighten auth on `/api/sonarqube/summary|issues|quality-gate` — currently
+  publicly readable.
+- (P3) Add `service-risk-card-{name}` testids on Predictive cards.
+- (P3) Add `aria-describedby` to Radix `DialogContent` (a11y).
+- (P3) Promote `_SQ_ISSUE_STATE` from in-process dict to Mongo collection.
 
-
-- **Per-source ingest_token** (32-char hex) auto-generated on source creation; backfilled for legacy sources
-- **Public `POST /api/sources/{id}/ingest`** — auth via `?token=` query OR `X-Ingest-Token` header. 401 wrong token, 403 disabled source, 404 missing source.
-- **6 payload adapters** — cloudwatch (SNS ALARM/OK/INSUFFICIENT_DATA), datadog (alert_type), pagerduty (event.data.urgency), grafana/prometheus (Alertmanager multi-alert), custom passthrough. Severity normalized via `_norm_severity`.
-- **`POST /api/sources/{id}/test`** (auth-required) — fires a curated sample payload through the same pipeline so users can verify wiring without a real monitoring tool.
-- **Counters** — `ingest_count` + `last_ingested_at` track per-source activity.
-- **Settings UI** — masked webhook URLs with reveal/copy/test buttons per source, live counter display.
-
-## Backlog
-### P1 (next)
-- Refactor server.py (now ~1800+ lines) into modules (`routes/auth`, `routes/incidents`, `routes/sources`, `routes/notifications`, `routes/cicd`, `services/triage`, `services/webhook_adapters`, `services/cicd_adapters`, `services/notifications`)
-- RBAC: gate sources mutations + /auth/users to admin/on-call only
-- Per-source rate limiting + body-size cap on /ingest endpoint
-- Dedup window on ingested alerts (same source+title+service within N seconds)
-- AI-generated post-incident report when incident is resolved (auto-drafted summary + action items shareable as public post-mortem URL)
-- F-01: implement real GitLab / CircleCI / ArgoCD adapters (stubs already in place)
-- F-01: surface "Rollback executed" feedback loop (track whether the suggested rollback was actually run, to improve future confidence scoring)
-
-### P2
-- Markdown rendering in chat responses + CLI command copy buttons
-- Email digest for unattended alerts (using existing email channel)
-- WebSocket-based real-time alert feed (replace 6s polling)
-- Brute-force protection on /api/auth/login + per-IP rate limiting
-- Per-incident notification routing (notify only the assignee's preferred channels)
-
-### P3
-- Multi-tenancy (org_id row-level isolation)
-- SAML/OIDC SSO
-- LLM cost dashboard + feedback loop (thumbs up/down on AI output)
-- Pluggable correlation engine (DBSCAN / temporal / service-graph)
+## Next tasks
+1. (Optional) Push resolved branch back via "Save to GitHub" – user choice.
+2. (Optional) Address the P2 backlog items above before next feature work.

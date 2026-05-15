@@ -60,6 +60,39 @@ export const toggleSource = (id) => api.patch(`/sources/${id}`).then(r => r.data
 // Analytics
 export const fetchAnalytics = () => api.get('/analytics/summary').then(r => r.data);
 
+// SonarQube — Code Quality issue workflow
+export const fetchSonarIssue = (key) =>
+  api.get(`/sonarqube/issues/${key}`).then(r => r.data);
+export const claimSonarIssue = (key) =>
+  api.post(`/sonarqube/issues/${key}/claim`).then(r => r.data);
+export const assignSonarIssue = (key, email) =>
+  api.post(`/sonarqube/issues/${key}/assign`, { email }).then(r => r.data);
+export const updateSonarIssueStatus = (key, status) =>
+  api.patch(`/sonarqube/issues/${key}/status`, { status }).then(r => r.data);
+
+// SonarQube AI remediation assistant
+export const fetchSonarIssueChat = (key) =>
+  api.get(`/sonarqube/issues/${key}/chat`).then(r => r.data);
+export const sendSonarIssueChat = (key, text, intent) =>
+  api.post(`/sonarqube/issues/${key}/chat`, intent ? { text, intent } : { text }).then(r => r.data);
+
+// SonarQube — F-02 enhanced dashboard
+/** Generate a fix proposal (explanation + unified diff + confidence) for an issue. */
+export const generateSonarFix = (key) =>
+  api.post(`/sonarqube/issues/${key}/generate-fix`).then(r => r.data);
+/** List comments on a SonarQube issue. */
+export const fetchSonarIssueComments = (key) =>
+  api.get(`/sonarqube/issues/${key}/comments`).then(r => r.data);
+/** Add a comment to a SonarQube issue. */
+export const addSonarIssueComment = (key, text) =>
+  api.post(`/sonarqube/issues/${key}/comments`, { text }).then(r => r.data);
+/** 7-day mock trend (bugs/vulns/smells per day). */
+export const fetchSonarTrend = (days = 7) =>
+  api.get(`/sonarqube/trend`, { params: { days } }).then(r => r.data);
+/** Tells the UI whether the backend is on mock data or a live SonarQube instance. */
+export const fetchSonarConfig = () =>
+  api.get('/sonarqube/config').then(r => r.data);
+
 // F-01 — CI/CD tools & deployment correlation
 export const fetchCICDTools = () => api.get('/cicd/tools').then(r => r.data);
 export const addCICDTool = (data) => api.post('/cicd/tools', data).then(r => r.data);
