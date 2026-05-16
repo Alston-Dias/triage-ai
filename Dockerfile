@@ -9,7 +9,12 @@
 # -----------------------------------------------------------------------------
 # Stage 1 · Build the React frontend
 # -----------------------------------------------------------------------------
-FROM node:20-bookworm-slim AS frontend-builder
+# Pin --platform=linux/amd64 because MongoDB 7.0's official .deb packages for
+# Debian Bookworm are amd64-only (no arm64 build exists upstream). Forcing
+# amd64 here guarantees the build works the same on Apple Silicon laptops as
+# on amd64 cloud hosts (AWS ECS / EC2 / Fargate, GCP, etc.). On M-series Macs
+# this means the first build is emulated (slower), then cached.
+FROM --platform=linux/amd64 node:20-bookworm-slim AS frontend-builder
 
 WORKDIR /build
 
@@ -39,7 +44,9 @@ RUN yarn build
 # -----------------------------------------------------------------------------
 # Stage 2 · Runtime: Python + MongoDB + supervisord
 # -----------------------------------------------------------------------------
-FROM python:3.12-slim-bookworm AS runtime
+# Same amd64 pin as the frontend stage — MongoDB's apt repo only has
+# mongodb-org for amd64 on Debian Bookworm.
+FROM --platform=linux/amd64 python:3.12-slim-bookworm AS runtime
 
 # Avoid interactive tzdata, keep pip lean
 ENV DEBIAN_FRONTEND=noninteractive \
