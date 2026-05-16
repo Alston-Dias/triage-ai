@@ -63,25 +63,44 @@ function inlineCss(html) {
 
 function inlineJs(html) {
   // Match: <script ... src="/static/js/...js" ...></script>
+  // We collect each inlined script in order, replace the original tag with
+  // a placeholder comment, then move all inlined scripts to just before
+  // </body>. This preserves CRA's `defer` semantics (run after DOM parse).
   const scriptRe = /<script\b([^>]*)\bsrc=["']([^"']+)["']([^>]*)><\/script>/gi;
-  return html.replace(scriptRe, (match, pre, src, post) => {
+  const inlinedScripts = [];
+
+  let processed = html.replace(scriptRe, (match, pre, src, post) => {
     if (!src.startsWith('/static/')) return match; // leave external scripts alone
     const js = readBuildFile(src);
     if (js == null) {
       console.warn(`[inline-build] JS not found on disk: ${src} (leaving script tag)`);
       return match;
     }
-    // Preserve attributes other than `src` (e.g. type, nomodule). `defer`
-    // is meaningless for inline scripts; drop it to avoid confusion.
+    // Preserve attributes other than src/defer/async (defer + async are
+    // meaningless for inline scripts and we'll relocate the tag to the end
+    // of <body> ourselves to mimic defer ordering).
     const attrs = `${pre} ${post}`
       .replace(/\bdefer(=["'][^"']*["'])?/gi, '')
       .replace(/\basync(=["'][^"']*["'])?/gi, '')
       .replace(/\s+/g, ' ')
       .trim();
     const attrStr = attrs ? ` ${attrs}` : '';
-    console.log(`[inline-build] inlined JS   ${src} (${js.length} bytes)`);
-    return `<script data-inlined-from="${src}"${attrStr}>\n${escapeForScriptTag(js)}\n</script>`;
+    console.log(`[inline-build] inlined JS   ${src} (${js.length} bytes) -> moved to end of <body>`);
+    inlinedScripts.push(
+      `<script data-inlined-from="${src}"${attrStr}>\n${escapeForScriptTag(js)}\n</script>`
+    );
+    return `<!-- inlined: ${src} -->`;
   });
+
+  if (inlinedScripts.length) {
+    const block = `\n${inlinedScripts.join('\n')}\n`;
+    if (/<\/body>/i.test(processed)) {
+      processed = processed.replace(/<\/body>/i, `${block}</body>`);
+    } else {
+      processed += block;
+    }
+  }
+  return processed;
 }
 
 function main() {
