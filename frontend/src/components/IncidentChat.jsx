@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { fetchChat, sendChat } from '../lib/api';
 import { Brain, Send } from 'lucide-react';
+import MarkdownMessage from './ui/MarkdownMessage';
 
 export default function IncidentChat({ incidentId, locked }) {
   const [messages, setMessages] = useState([]);
@@ -61,7 +62,7 @@ export default function IncidentChat({ incidentId, locked }) {
               <div className="text-[10px] text-neutral-500 mb-1 font-medium">
                 {m.role === 'user' ? 'You' : 'TriageAI'}
               </div>
-              <div className="whitespace-pre-wrap">{m.text}</div>
+              <MarkdownMessage text={m.text} />
             </div>
           </div>
         ))}

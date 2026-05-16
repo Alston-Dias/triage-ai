@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { fetchSonarIssueChat, sendSonarIssueChat } from '../lib/api';
 import { Brain, Send, BookOpen, Wand2, Shuffle, FlaskConical, GitPullRequest } from 'lucide-react';
+import MarkdownMessage from './ui/MarkdownMessage';
 
 // 5 canonical quick actions for the enhanced Sonar Copilot.
 // `intent` matches the backend SONAR_AI_INTENTS list; backend keeps the old
@@ -125,7 +126,7 @@ export default function IssueAIChat({ issueKey }) {
                   </span>
                 )}
               </div>
-              <div className="whitespace-pre-wrap">{m.text}</div>
+              <MarkdownMessage text={m.text} />
             </div>
           </div>
         ))}
