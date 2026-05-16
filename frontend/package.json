@@ -60,7 +60,8 @@
   },
   "scripts": {
     "start": "craco start",
-    "build": "craco build",
+    "build": "craco build && node scripts/inline-build.js",
+    "build:no-inline": "craco build",
     "test": "craco test"
   },
   "browserslist": {
