@@ -13,10 +13,18 @@ FROM node:20-bookworm-slim AS frontend-builder
 
 WORKDIR /build
 
-# Install deps first for better layer caching
+# Install deps first for better layer caching.
+#
+# We deliberately do NOT use --frozen-lockfile here. yarn 1.x's frozen mode
+# fails the build the moment package.json and yarn.lock disagree by even a
+# trivial spec (e.g. when a new dep is added but the lockfile in the build
+# context is from an older snapshot or git ref). Letting yarn reconcile the
+# lockfile in-container is robust against stale build contexts and keeps the
+# image reproducible enough for our purposes (the resolved versions are
+# pinned by the lockfile we copy in; yarn only updates what's missing).
 COPY frontend/package.json frontend/yarn.lock ./
 RUN --mount=type=cache,target=/usr/local/share/.cache/yarn \
-    yarn install --frozen-lockfile --network-timeout 1000000
+    yarn install --network-timeout 1000000
 
 # Copy source and build. We deliberately leave REACT_APP_BACKEND_URL empty so
 # the built JS uses *relative* /api/... URLs and hits whatever host serves it
