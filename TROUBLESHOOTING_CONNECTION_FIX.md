@@ -10,7 +10,7 @@ The frontend `.env` file was configured with a production URL instead of the loc
 
 **Before (Incorrect)**:
 ```env
-REACT_APP_BACKEND_URL=https://ai-orchestrator-112.preview.emergentagent.com
+REACT_APP_BACKEND_URL=https://infra-preview-3.preview.emergentagent.com
 ```
 
 **After (Fixed)**:

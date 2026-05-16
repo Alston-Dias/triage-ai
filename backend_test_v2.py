@@ -11,7 +11,7 @@ from typing import Dict, Any, Optional
 import httpx
 
 # Configuration
-BACKEND_URL = "https://ai-orchestrator-112.preview.emergentagent.com/api"
+BACKEND_URL = "https://infra-preview-3.preview.emergentagent.com/api"
 TEST_EMAIL = "sre1@triage.ai"
 TEST_PASSWORD = "sre123"
 
