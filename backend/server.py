@@ -29,7 +29,7 @@ from pydantic import BaseModel, Field, EmailStr
 from cryptography.fernet import Fernet, InvalidToken
 
 from emergentintegrations.llm.chat import LlmChat, UserMessage
-from llm_provider import get_chat as llm_chat, llm_is_configured
+from llm_provider import get_chat as llm_chat, llm_is_configured, active_model
 
 mongo_url = os.environ['MONGO_URL']
 client = AsyncIOMotorClient(mongo_url)
@@ -320,6 +320,26 @@ async def list_users(current_user: dict = Depends(get_current_user)):
 @api_router.get("/")
 async def root():
     return {"service": "TriageAI", "status": "operational"}
+
+
+@api_router.get("/system/llm")
+async def system_llm():
+    """
+    Public metadata about the active LLM. Used by the UI to label panels
+    accurately (replaces the old hardcoded "Claude Sonnet 4.5" strings).
+    """
+    from llm_provider import (
+        _resolve_provider as _rp,
+        _gateway_base_url as _gbu,
+        _gateway_configured as _gc,
+    )
+    return {
+        "provider": _rp(),
+        "model": active_model(),
+        "configured": llm_is_configured(),
+        "gateway_configured": _gc(),
+        "base_url": _gbu() or None,
+    }
 
 
 @api_router.post("/alerts/ingest", response_model=Alert)

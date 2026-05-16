@@ -43,6 +43,7 @@ import {
   TYPE_LABEL,
   PROVIDER_LABEL,
 } from '../lib/codeQualityApi';
+import { useActiveModel } from '../hooks/useActiveModel';
 
 // ============================================================================
 // Helpers
@@ -81,6 +82,7 @@ const SourceIcon = ({ source }) => {
 // New Scan Modal (3 tabs)
 // ============================================================================
 const NewScanModal = ({ open, onClose, integrations, onScanCreated, onIntegrationCreated, onIntegrationSyncStarted }) => {
+  const { model } = useActiveModel();
   const [tab, setTab] = useState('github');
   const [busy, setBusy] = useState(false);
 
@@ -279,7 +281,7 @@ const NewScanModal = ({ open, onClose, integrations, onScanCreated, onIntegratio
                   onChange={(e) => setRepoUrl(e.target.value)}
                   data-testid="cq2-gh-url"
                 />
-                <p className="text-[11px] text-neutral-500 mt-1">Public or private. Up to 30 source files will be analyzed by Claude Sonnet 4.5.</p>
+                <p className="text-[11px] text-neutral-500 mt-1">Public or private. Up to 30 source files will be analyzed by <span className="font-mono">{model}</span>.</p>
               </div>
               <div>
                 <label className={lbl}>Branch (optional)</label>
@@ -561,6 +563,7 @@ const NewScanModal = ({ open, onClose, integrations, onScanCreated, onIntegratio
 // Issue Detail Drawer with "Generate Fix"
 // ============================================================================
 const IssueDrawer = ({ issue, scan, open, onClose, onFixGenerated }) => {
+  const { model } = useActiveModel();
   const [genBusy, setGenBusy] = useState(false);
   const [ghRepo, setGhRepo] = useState('');
   const [ghToken, setGhToken] = useState('');
@@ -652,7 +655,7 @@ const IssueDrawer = ({ issue, scan, open, onClose, onFixGenerated }) => {
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <Wand2 size={14} className="text-[#D4AF37]" />
-                <div className="text-sm font-semibold text-white">AI Fix (Claude Sonnet 4.5)</div>
+                <div className="text-sm font-semibold text-white">AI Fix <span className="font-mono text-[11px] text-neutral-400">({model})</span></div>
               </div>
             </div>
             <div className="text-[11px] text-neutral-500">
@@ -900,6 +903,7 @@ const TotalsPill = ({ totals }) => {
 // Main panel
 // ============================================================================
 export default function CodeQualityScansPanel() {
+  const { model } = useActiveModel();
   const [scans, setScans] = useState([]);
   const [integrations, setIntegrations] = useState([]);
   const [openScanId, setOpenScanId] = useState(null);
@@ -1015,7 +1019,7 @@ export default function CodeQualityScansPanel() {
               AI Code Quality Scans
             </h2>
             <p className="text-xs text-neutral-500 mt-1">
-              Scan a GitHub repo, upload a .zip, or pull issues from your existing scanner — and get Claude-generated fixes.
+              Scan a GitHub repo, upload a .zip, or pull issues from your existing scanner — and get <span className="font-mono">{model}</span>-generated fixes.
             </p>
           </div>
           <div className="flex items-center gap-2">
@@ -1127,7 +1131,7 @@ export default function CodeQualityScansPanel() {
             {openScan && openScan.status === 'scanning' && (
               <div className="flex items-center gap-1.5 text-[11px] text-sky-300">
                 <Loader2 size={11} className="animate-spin" />
-                Analyzing with Claude…
+                Analyzing with <span className="font-mono">{model}</span>…
               </div>
             )}
           </div>

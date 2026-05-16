@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { login as apiLogin } from '../lib/api';
 import { useAuth } from '../lib/auth';
 import { useTheme } from '../lib/theme';
+import { useActiveModel } from '../hooks/useActiveModel';
 import { Zap, ArrowRight, Sun, Moon, ShieldCheck, Activity, Sparkles } from 'lucide-react';
 
 const DEMO_USERS = [
@@ -20,6 +21,7 @@ export default function Login() {
   const nav = useNavigate();
   const { setUser } = useAuth();
   const { theme, toggle } = useTheme();
+  const { model } = useActiveModel();
 
   const submit = async (e) => {
     e?.preventDefault?.();
@@ -76,7 +78,7 @@ export default function Login() {
                 Correlate.<br />Analyze.<br /><span className="bg-gradient-to-r from-[#D4AF37] via-[#E6C14D] to-[#D4AF37] bg-clip-text text-transparent">Resolve.</span>
               </h1>
               <p className="text-sm text-neutral-400 mt-6 leading-relaxed max-w-md">
-                Sign in to your operator console — correlate alerts, run AI-powered triage with Claude Sonnet 4.5, and ship remediation playbooks straight to your team.
+                Sign in to your operator console — correlate alerts, run AI-powered triage with <span className="font-mono">{model}</span>, and ship remediation playbooks straight to your team.
               </p>
 
               <div className="mt-10 grid grid-cols-1 gap-3 max-w-sm">
@@ -85,7 +87,7 @@ export default function Login() {
               </div>
             </div>
           </div>
-          <div className="text-[10px] text-neutral-600 mt-12 font-mono tracking-wider uppercase">v0.4.0 · Claude Sonnet 4.5</div>
+          <div className="text-[10px] text-neutral-600 mt-12 font-mono tracking-wider uppercase" data-testid="login-active-model">v0.4.0 · {model}</div>
         </div>
 
         {/* Right form */}
