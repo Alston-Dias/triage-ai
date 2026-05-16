@@ -69,7 +69,7 @@ export default function Dashboard() {
   const handleAge = async () => { const r = await ageAlerts(); toast.success(`Aged ${r.aged} alerts`); load(); setDemoOpen(false); };
 
   return (
-    <div className="h-[calc(100vh-4rem)] flex flex-col">
+    <div className="h-full flex flex-col">
       <Toaster theme="dark" position="bottom-right" />
       {/* Top bar */}
       <div className="px-8 py-6 flex items-center justify-between gap-4 flex-wrap">

@@ -23,9 +23,9 @@ export default function Layout({ children }) {
   const initials = user ? user.name.split(' ').map(p => p[0]).slice(0,2).join('').toUpperCase() : '';
 
   return (
-    <div className="min-h-screen text-white flex">
+    <div className="h-screen overflow-hidden text-white flex">
       {/* Sidebar */}
-      <aside className="w-64 border-r border-[#1f1f1f] bg-[#0A0A0A]/60 backdrop-blur-xl flex flex-col relative z-10">
+      <aside className="w-64 border-r border-[#1f1f1f] bg-[#0A0A0A]/60 backdrop-blur-xl flex flex-col relative z-10 h-full overflow-y-auto">
         {/* Brand */}
         <div className="px-6 py-6 flex items-center gap-3">
           <div className="relative w-10 h-10 rounded-xl flex items-center justify-center
@@ -119,7 +119,7 @@ export default function Layout({ children }) {
           </div>
         </header>
         <UnattendedBanner />
-        <div className="flex-1 overflow-auto">{children}</div>
+        <div className="flex-1 min-h-0 overflow-auto">{children}</div>
       </main>
     </div>
   );
