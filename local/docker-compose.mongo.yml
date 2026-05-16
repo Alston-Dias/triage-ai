@@ -1,0 +1,21 @@
+# Stand-alone MongoDB for TriageAI local dev.
+# Usage:  docker compose -f local/docker-compose.mongo.yml up -d
+# The setup.sh / start.sh scripts will use this container automatically if
+# you don't have MongoDB installed on the host.
+services:
+  mongo:
+    image: mongo:7
+    container_name: triageai-mongo
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    volumes:
+      - triageai-mongo-data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  triageai-mongo-data:
