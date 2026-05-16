@@ -1,28 +1,11 @@
 import axios from 'axios';
+import { INITIAL_QUERY, getRoutingQueryString } from '@/lib/preserveProxyRouting';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 export const API = `${BACKEND_URL}/api`;
 
-// ---------------------------------------------------------------------------
-// Proxy routing params (e.g. "?app=<uuid>")
-// ---------------------------------------------------------------------------
-// Some deployment proxies (e.g. solution3.demopersistent.com) use query-string
-// routing. The browser drops the query string when fetching sub-resources,
-// which causes 503s on /api/* and /static/* requests. To keep API calls
-// working we capture the params present on initial page load and replay them
-// on every outgoing request.
-const INITIAL_QUERY = (() => {
-  try {
-    return new URLSearchParams(window.location.search);
-  } catch {
-    return new URLSearchParams();
-  }
-})();
-
-export const getRoutingQueryString = () => {
-  const s = INITIAL_QUERY.toString();
-  return s ? `?${s}` : '';
-};
+// Re-export so existing consumers can keep importing from '@/lib/api'.
+export { getRoutingQueryString };
 
 export const api = axios.create({ baseURL: API, timeout: 90000 });
 
