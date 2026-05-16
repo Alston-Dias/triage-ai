@@ -94,8 +94,18 @@ function inlineJs(html) {
 
   if (inlinedScripts.length) {
     const block = `\n${inlinedScripts.join('\n')}\n`;
-    if (/<\/body>/i.test(processed)) {
-      processed = processed.replace(/<\/body>/i, `${block}</body>`);
+    // Find the LAST occurrence of </body> (case-insensitive) and splice the
+    // inlined-script block in just before it. We avoid `String.replace(regex,
+    // replacementString)` because the inlined JS frequently contains the
+    // literal text `$&`, `$1`, `$$` etc. which `replace` interprets as
+    // special patterns (e.g. `$&` → the matched substring `</body>`), which
+    // would silently corrupt regex literals inside the bundle.
+    const re = /<\/body>/gi;
+    let lastIdx = -1;
+    let m;
+    while ((m = re.exec(processed)) !== null) lastIdx = m.index;
+    if (lastIdx >= 0) {
+      processed = processed.slice(0, lastIdx) + block + processed.slice(lastIdx);
     } else {
       processed += block;
     }
