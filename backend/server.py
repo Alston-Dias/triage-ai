@@ -25,6 +25,7 @@ from pydantic import BaseModel, Field, EmailStr
 from cryptography.fernet import Fernet, InvalidToken
 
 from emergentintegrations.llm.chat import LlmChat, UserMessage
+from llm_provider import get_chat as llm_chat, llm_is_configured
 
 mongo_url = os.environ['MONGO_URL']
 client = AsyncIOMotorClient(mongo_url)
@@ -556,11 +557,11 @@ async def run_triage(req: TriageRequest, current_user: dict = Depends(get_curren
     if deployment_prompt_block:
         user_text += "\n" + deployment_prompt_block
     try:
-        chat = LlmChat(
-            api_key=EMERGENT_LLM_KEY,
+        chat = llm_chat(
             session_id=f"triage-{uuid.uuid4().hex[:8]}",
             system_message=TRIAGE_SYSTEM,
-        ).with_model("anthropic", "claude-sonnet-4-5-20250929")
+            model_hint="anthropic:claude-sonnet-4-5-20250929",
+        )
         msg = UserMessage(text=user_text)
         raw = await chat.send_message(msg)
         parsed = _extract_json(raw)
@@ -690,11 +691,11 @@ async def chat_message(incident_id: str, body: ChatPrompt,
         history_text += f"\n{prefix}: {m['text']}"
 
     try:
-        chat = LlmChat(
-            api_key=EMERGENT_LLM_KEY,
+        chat = llm_chat(
             session_id=f"chat-{incident_id}",
             system_message=sys_msg,
-        ).with_model("anthropic", "claude-sonnet-4-5-20250929")
+            model_hint="anthropic:claude-sonnet-4-5-20250929",
+        )
         prompt = (history_text + "\n\nUser: " + body.text) if history_text else body.text
         reply = await chat.send_message(UserMessage(text=prompt))
     except Exception as e:
@@ -2080,14 +2081,14 @@ class PredictorService:
             f"to avoid this incident. Include exact kubectl/SQL/CLI commands where relevant. "
             f"Keep total length under 600 characters. Plain text only — no markdown headings."
         )
-        if not EMERGENT_LLM_KEY:
+        if not llm_is_configured():
             return PredictorService._fallback_recommendation(service, metric, current, expected, eta_min)
         try:
-            chat = LlmChat(
-                api_key=EMERGENT_LLM_KEY,
+            chat = llm_chat(
                 session_id=f"predict-{service}-{metric}-{uuid.uuid4().hex[:6]}",
                 system_message="You are TriageAI's predictive remediation engine. Be concise and operational.",
-            ).with_model("anthropic", "claude-sonnet-4-5-20250929")
+                model_hint="anthropic:claude-sonnet-4-5-20250929",
+            )
             text = await chat.send_message(UserMessage(text=prompt))
             return (text or "").strip()[:1500] or PredictorService._fallback_recommendation(
                 service, metric, current, expected, eta_min)
@@ -3319,3 +3320,37 @@ app.add_middleware(
 @app.on_event("shutdown")
 async def shutdown_db_client():
     client.close()
+
+
+# ====================================================================================================
+# Static frontend (production / all-in-one container)
+# When `frontend_build/` exists next to /backend (created at Docker build time),
+# we serve the React SPA from the same FastAPI process. In local dev this
+# directory does not exist, so the block is a no-op.
+# ====================================================================================================
+from pathlib import Path  # noqa: E402
+from fastapi.responses import FileResponse  # noqa: E402
+from fastapi.staticfiles import StaticFiles  # noqa: E402
+from starlette.exceptions import HTTPException as StarletteHTTPException  # noqa: E402
+
+_FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend_build"
+
+if _FRONTEND_DIR.is_dir() and (_FRONTEND_DIR / "index.html").exists():
+    _STATIC_DIR = _FRONTEND_DIR / "static"
+    if _STATIC_DIR.is_dir():
+        app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="frontend-static")
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def _serve_spa(full_path: str):
+        # `/api/*` is registered above this catch-all and wins via FastAPI's
+        # ordering, but guard against shadowing edge cases.
+        if full_path.startswith("api/") or full_path.startswith("api"):
+            raise StarletteHTTPException(status_code=404)
+        candidate = _FRONTEND_DIR / full_path
+        if full_path and candidate.is_file():
+            return FileResponse(str(candidate))
+        return FileResponse(str(_FRONTEND_DIR / "index.html"))
+
+    logger.info("Serving static frontend from %s", _FRONTEND_DIR)
+else:
+    logger.info("No frontend_build/ found — running in API-only / dev mode.")

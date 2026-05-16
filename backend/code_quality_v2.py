@@ -45,6 +45,7 @@ from fastapi import (
 from pydantic import BaseModel, Field
 
 from emergentintegrations.llm.chat import LlmChat, UserMessage
+from llm_provider import get_chat as llm_chat, llm_is_configured
 
 logger = logging.getLogger("triageai.code_quality_v2")
 
@@ -195,13 +196,13 @@ def _strip_code_fence(s: str) -> str:
 
 
 async def _claude(system: str, prompt: str, session_id: str) -> str:
-    if not EMERGENT_LLM_KEY:
-        raise RuntimeError("EMERGENT_LLM_KEY is not set")
-    chat = LlmChat(
-        api_key=EMERGENT_LLM_KEY,
+    if not llm_is_configured():
+        raise RuntimeError("LLM is not configured (set EMERGENT_LLM_KEY or LLM_API_KEY)")
+    chat = llm_chat(
         session_id=session_id,
         system_message=system,
-    ).with_model("anthropic", CLAUDE_MODEL)
+        model_hint=f"anthropic:{CLAUDE_MODEL}",
+    )
     msg = UserMessage(text=prompt)
     resp = await chat.send_message(msg)
     return resp if isinstance(resp, str) else str(resp)

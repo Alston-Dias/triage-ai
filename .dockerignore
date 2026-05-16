@@ -1,0 +1,52 @@
+# VCS / IDE
+.git
+.gitignore
+.github
+.vscode
+.idea
+.emergent
+
+# Local dev artefacts
+local/.run
+local/.run/**
+backend/.venv
+backend/__pycache__
+backend/**/__pycache__
+frontend/node_modules
+frontend/build
+frontend/.cache
+frontend/yarn-error.log
+frontend/npm-debug.log
+frontend/.env.local
+frontend/.env.development
+frontend/.env.production
+
+# Logs and temp
+*.log
+*.pid
+*.swp
+.DS_Store
+.coverage
+.pytest_cache
+.mypy_cache
+.ruff_cache
+node_modules
+
+# Docs / large markdown that aren't needed at runtime
+*.md
+!LOCAL_SETUP.md
+!README.md
+!DEPLOY_DOCKER.md
+
+# Tests
+tests
+
+# Mongo data accidentally left around
+data
+db
+
+# Misc
+.env
+.env.*
+!frontend/.env
+!backend/.env
