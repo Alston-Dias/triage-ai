@@ -26,15 +26,23 @@ Write-Host ""
 Log 'Checking prerequisites…'
 
 $Py = $null
-foreach ($c in @('python3.11','python3.12','python3.10','python','python3')) {
+foreach ($c in @('python3.12','python3.11','python3.13','python3.10','python','python3')) {
     $cmd = Get-Command $c -ErrorAction SilentlyContinue
     if ($cmd) {
         $v = & $c -c 'import sys; print("%d.%d" % sys.version_info[:2])'
-        $major,$minor = $v.Split('.') | ForEach-Object { [int]$_ }
-        if ($major -eq 3 -and $minor -ge 10) { $Py = $c; Ok "Python: $c ($v)"; break }
+        $parts = $v.Split('.'); $major = [int]$parts[0]; $minor = [int]$parts[1]
+        if ($major -eq 3 -and $minor -ge 10 -and $minor -le 13) { $Py = $c; Ok "Python: $c ($v)"; break }
     }
 }
-if (-not $Py) { Die 'Python 3.10+ not found. Install from https://www.python.org/downloads/' }
+if (-not $Py) {
+    Die @'
+No compatible Python found. Need 3.10-3.13 (3.14 is too new for the pinned dependencies).
+
+Recommended fix - install Python 3.12 from https://www.python.org/downloads/release/python-3127/
+(check "Add python.exe to PATH" during install), then re-open PowerShell and re-run:
+    powershell -ExecutionPolicy Bypass -File local\setup.ps1
+'@
+}
 
 $nodeCmd = Get-Command node -ErrorAction SilentlyContinue
 if (-not $nodeCmd) { Die 'Node.js not found. Install Node 18+ from https://nodejs.org' }

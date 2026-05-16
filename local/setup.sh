@@ -35,19 +35,61 @@ printf "${BLD}╰─────────────────────
 log "Checking prerequisites…"
 
 # --- Python --------------------------------------------------------------
+# We require Python 3.10-3.13. 3.14 is rejected because the pinned
+# scientific/grpc deps (scikit-learn 1.5.2, grpcio-status 1.71.2, etc.)
+# don't have stable wheels for it yet.
 PY_BIN=""
-for candidate in python3.11 python3.12 python3.10 python3; do
+PY_VERSION=""
+for candidate in python3.12 python3.11 python3.13 python3.10 python3; do
     if command -v "$candidate" >/dev/null 2>&1; then
-        v=$("$candidate" -c 'import sys; print("%d.%d" % sys.version_info[:2])')
+        v=$("$candidate" -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null || echo "")
+        [ -z "$v" ] && continue
         major=$(echo "$v" | cut -d. -f1); minor=$(echo "$v" | cut -d. -f2)
-        if [ "$major" -eq 3 ] && [ "$minor" -ge 10 ]; then
+        if [ "$major" = "3" ] && [ "$minor" -ge 10 ] && [ "$minor" -le 13 ]; then
             PY_BIN="$candidate"
+            PY_VERSION="$v"
             ok "Python: $candidate ($v)"
             break
         fi
     fi
 done
-[ -z "$PY_BIN" ] && die "Python 3.10+ not found. Install from https://www.python.org/downloads/"
+
+if [ -z "$PY_BIN" ]; then
+    # Build a useful diagnostic listing what *was* found
+    found_versions=""
+    for c in python3 python3.10 python3.11 python3.12 python3.13 python3.14; do
+        if command -v "$c" >/dev/null 2>&1; then
+            v=$("$c" -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null || echo "?")
+            found_versions="$found_versions $c=$v"
+        fi
+    done
+    os_hint=""
+    case "$(uname -s)" in
+        Darwin)
+            os_hint=$'  macOS (Homebrew):\n      brew install python@3.12\n      brew unlink python@3.14 2>/dev/null || true\n      brew link --overwrite python@3.12\n      hash -r\n      ./local/setup.sh' ;;
+        Linux)
+            os_hint=$'  Debian/Ubuntu:  sudo apt install -y python3.12 python3.12-venv\n  Fedora:         sudo dnf install -y python3.12\n  Then re-run: ./local/setup.sh' ;;
+    esac
+    die "No compatible Python found. Need 3.10-3.13 (3.14 is too new for the pinned dependencies).
+Detected:${found_versions:- none}
+
+Recommended fix - install Python 3.12:
+${os_hint}
+
+Or with pyenv (any OS):
+  pyenv install 3.12.7
+  pyenv shell 3.12.7
+  ./local/setup.sh"
+fi
+
+# Sanity: if a stale venv was created with a different Python version, blow it away
+if [ -d "$VENV_DIR" ] && [ -f "$VENV_DIR/pyvenv.cfg" ]; then
+    cfg_ver=$(grep -E '^version' "$VENV_DIR/pyvenv.cfg" 2>/dev/null | head -1 | awk -F= '{print $2}' | tr -d ' ' | cut -d. -f1,2 || true)
+    if [ -n "$cfg_ver" ] && [ "$cfg_ver" != "$PY_VERSION" ]; then
+        warn "Existing venv was built with Python $cfg_ver but we are using $PY_VERSION - recreating it."
+        rm -rf "$VENV_DIR"
+    fi
+fi
 
 # --- Node ----------------------------------------------------------------
 if ! command -v node >/dev/null 2>&1; then

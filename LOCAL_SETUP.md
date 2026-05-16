@@ -8,10 +8,12 @@ You need **either** of these setups installed:
 
 | Requirement | macOS / Linux                                     | Windows                                    |
 |-------------|---------------------------------------------------|--------------------------------------------|
-| Python 3.10+ | `brew install python@3.11` / `apt install python3.11 python3.11-venv` | https://www.python.org/downloads/ |
+| **Python 3.10 – 3.13** (not 3.14) | `brew install python@3.12` / `apt install python3.12 python3.12-venv` | https://www.python.org/downloads/release/python-3127/ |
 | Node 18+    | `brew install node` / NodeSource                  | https://nodejs.org                         |
 | Yarn        | auto-installed via corepack                        | auto-installed via corepack                |
 | MongoDB     | `brew services start mongodb-community` **or** Docker | MongoDB Community service **or** Docker Desktop |
+
+> **Python 3.14 is too new** for the pinned scientific/grpc dependencies (scikit-learn, grpcio-status, pandas). The setup script will refuse to run on 3.14 and tell you exactly how to install 3.12. If you're on Apple Silicon with brew: `brew install python@3.12 && brew link --overwrite python@3.12`.
 
 > If MongoDB isn't installed, the setup script will automatically use a Docker container (`mongo:7`). You'll still need Docker installed in that case.
 
@@ -82,6 +84,7 @@ Then restart: `./local/stop.sh && ./local/start.sh`. Without a key the UI works 
 
 ## Common issues
 
+- **`Python 3.14` detected / `grpcio-status` resolution-impossible error** — Python 3.14 is too new for the pinned scientific/grpc deps. Install Python 3.12: `brew install python@3.12 && brew link --overwrite python@3.12 && hash -r`, then re-run `./local/setup.sh` (it will auto-detect the new interpreter and rebuild the venv).
 - **Port already in use** — `start.sh` automatically frees ports 3000 and 8001 from orphaned processes before launching. If it can't, run `./local/stop.sh` first.
 - **MongoDB connection refused** — start Mongo (`brew services start mongodb-community` or `sudo systemctl start mongod`) and re-run `./local/start.sh`. To switch to the Docker fallback delete `local/.run/mongo.mode` and re-run `setup.sh`.
 - **`emergentintegrations` install fails** — make sure your network can reach `https://d33sy5i8bnduwe.cloudfront.net`. The setup script passes this as an extra index URL to pip.
