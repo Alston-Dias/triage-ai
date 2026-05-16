@@ -1,7 +1,11 @@
 from dotenv import load_dotenv
 from pathlib import Path
 ROOT_DIR = Path(__file__).parent
+# Repo-root .env carries the LLM gateway config (MODEL, GATEWAY_BASE_URL,
+# GATEWAY_API_KEY, ...). backend/.env carries infrastructure (MONGO_URL,
+# JWT_SECRET, ...). We load both; values already in the process env win.
 load_dotenv(ROOT_DIR / '.env')
+load_dotenv(ROOT_DIR.parent / '.env')
 
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, WebSocket, WebSocketDisconnect, Query
 from starlette.middleware.cors import CORSMiddleware
