@@ -847,6 +847,41 @@ test_plan:
 agent_communication:
   - agent: "main"
     message: |
+      Integrated the corporate OpenAI-compatible LLM gateway as the new default
+      for ALL AI calls (triage, incident chat, code analysis, code fixes,
+      predictive recommendations, SonarQube chat).
+
+        • New repo-root .env / .env.example carries MODEL, GATEWAY_BASE_URL,
+          GATEWAY_API_KEY, EMBEDDINGS_MODEL. backend/server.py now loads it in
+          addition to backend/.env.
+        • backend/llm_provider.py rewritten: provider auto-resolves to
+          "gateway" whenever GATEWAY_BASE_URL + GATEWAY_API_KEY are present.
+          model_hint (e.g. "anthropic:claude-...") is ignored under the
+          gateway — the single MODEL env var wins. New get_embeddings()
+          helper exposed for future use.
+        • Dockerfile + docker/entrypoint.sh updated: defaults
+          LLM_PROVIDER=gateway, MODEL=gpt-5.2-CIO,
+          GATEWAY_BASE_URL=https://hub-proxy-service.thankfulfield-16b4d5d6.eastus.azurecontainerapps.io/v1.
+          Entrypoint materialises /app/.env on container start so docker run -e
+          GATEWAY_API_KEY=... works.
+        • local/setup.sh + local/setup.ps1 now scaffold a repo-root .env from
+          .env.example on first run.
+        • Smoke-tested end-to-end against the live gateway:
+            – /api/triage returns valid structured JSON (P2 incident, 3 root
+              causes, 5 remediation steps) using gpt-5.2-CIO.
+            – /api/code-quality/issues/{id}/fix returns explanation (200+
+              chars), patched_file (468 chars), unified diff (694 chars),
+              and test_hint.
+
+      Please re-test all LLM-backed backend endpoints to confirm no regression
+      from the provider swap. Focus on: /api/triage,
+      /api/incidents/{id}/chat, /api/predictive-triage,
+      /api/code-quality/scans/github (small repo) +
+      /api/code-quality/issues/{id}/fix, and /api/sonarqube/issues/{key}/chat.
+      Auth (admin@triage.ai / admin123) and mongo are unchanged.
+
+  - agent: "main"
+    message: |
       F-02 (Predictive Triage) implemented. Adapted to actual repo stack:
       MongoDB (not InfluxDB), Mongo collections (no Alembic), Claude via
       emergentintegrations, FastAPI WebSocket. scikit-learn 1.5.2 added.
@@ -1124,3 +1159,103 @@ agent_communication:
       
       All F-02 UI features verified and working correctly. No critical issues found.
 
+
+  - agent: "testing"
+    message: |
+      ✅ LLM GATEWAY INTEGRATION TESTING COMPLETE - ALL TESTS PASSED (11/11)
+      
+      Comprehensive verification of all LLM-backed endpoints after gateway swap from Emergent/Claude 
+      to corporate OpenAI-compatible gateway (gpt-5.2-CIO).
+      
+      TEST RESULTS SUMMARY:
+      
+      1. ✅ Auth gate - All 7 LLM endpoints correctly return 401 without bearer token:
+         - POST /api/triage
+         - POST /api/incidents/{id}/chat
+         - POST /api/predictive-triage
+         - POST /api/code-quality/demo/seed
+         - POST /api/code-quality/issues/{id}/fix
+         - POST /api/code-quality/scans/github
+         - POST /api/sonarqube/issues/{key}/chat
+      
+      2. ✅ POST /api/code-quality/demo/seed?reset=true
+         - Returns 200 with {ok:true, reset:true, integrations_added:3, scans_added:5, issues_added:17}
+         - All counts >= 1 as required
+      
+      3. ✅ POST /api/triage with 2 alerts
+         - Returns 200 with valid structure
+         - priority=P2 (valid P0-P3)
+         - blast_radius present
+         - mttr_estimate_minutes is int
+         - affected_services is list
+         - summary is non-empty (558 chars)
+         - root_causes: 3 items with correct structure (rank, hypothesis, confidence, reasoning)
+         - remediation: 6 items with correct structure (phase, action)
+         - deployments: list present
+         - ✅ CRITICAL: Response is NOT the "Automated fallback triage" sentinel
+         - ✅ Real LLM response verified: Contains technical analysis like "edge-cdn cache key/configuration change"
+      
+      4. ✅ POST /api/incidents/{id}/chat
+         - Returns 200 with assistant_message.text non-empty (687 chars)
+         - ✅ NOT the "_(AI assistant unavailable:..." sentinel
+         - Real LLM response with contextual advice
+      
+      5. ✅ POST /api/predictive-triage
+         - Returns 200 with generated=25, predictions list with 25 items
+         - All predictions have non-empty recommended_action
+         - ✅ At least one prediction has recommended_action > 80 chars (510 chars found)
+         - ✅ Real LLM response verified: Contains kubectl commands like "kubectl scale deployment payments-api"
+         - NOT the deterministic fallback (which is short generic sentence)
+      
+      6. ✅ POST /api/code-quality/issues/{id}/fix
+         - Returns 200 with all required fields:
+           * explanation: 261 chars (non-empty)
+           * patched_file: 338 chars (> 50 chars requirement)
+           * diff: 561 chars (contains "@@" and "+"/"-" lines)
+           * test_hint: non-empty
+         - Fix persisted to database
+      
+      7. ✅ POST /api/code-quality/scans/github with https://github.com/octocat/Hello-World
+         - Returns 200, scan initiated with status='queued'
+         - Polled until status='done' (completed in <5s)
+         - ✅ Reached "done" status (NOT "failed")
+         - Scan completed successfully within 90s timeout
+      
+      8. ✅ POST /api/sonarqube/issues/{key}/chat with intent="explain_rule"
+         - Returns 200 with assistant reply non-empty (673 chars)
+         - ✅ NOT the "(no mocked reply)" sentinel
+         - Real LLM response with rule explanation
+      
+      9. ✅ GET /api/sonarqube/issues - NO REGRESSION
+         - Returns 200 with F-02 enriched fields intact:
+           * buckets: {BLOCKER:0, HIGH:0, MEDIUM:1, LOW:3}
+           * technical_debt_minutes: 50
+           * total_unfiltered: 4
+         - All fields present and correctly structured
+         - No regression from load_dotenv change
+      
+      VERIFICATION DETAILS:
+      
+      • Gateway configuration verified:
+        - MODEL=gpt-5.2-CIO
+        - GATEWAY_BASE_URL=https://hub-proxy-service.thankfulfield-16b4d5d6.eastus.azurecontainerapps.io/v1
+        - GATEWAY_API_KEY=sk-79112e548bba4631b5a254
+        - EMBEDDINGS_MODEL=embeddings
+      
+      • All LLM responses are REAL (not fallback/mocked):
+        - Triage: Contains technical analysis, not "Automated fallback triage"
+        - Predictive: Contains kubectl/SQL commands, not generic fallback
+        - Code fix: Contains real code patches and explanations
+        - Chat: Contains contextual responses, not unavailable sentinels
+      
+      • Auth enforcement: All endpoints correctly reject unauthenticated requests (401)
+      
+      • No regressions: Existing F-02 SonarQube enriched fields still present
+      
+      CONCLUSION:
+      
+      All LLM-backed endpoints are working correctly with the new corporate OpenAI-compatible 
+      gateway (gpt-5.2-CIO). The swap from Emergent/Claude to the gateway was successful with 
+      zero regressions. All responses are real LLM-generated content, not fallbacks.
+      
+      The gateway integration is production-ready.

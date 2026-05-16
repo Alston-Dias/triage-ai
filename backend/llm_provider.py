@@ -1,39 +1,37 @@
 """
 Pluggable LLM provider abstraction.
 
-By default this preserves the existing behaviour (emergentintegrations + Claude
-Sonnet 4.5 via EMERGENT_LLM_KEY) so nothing changes for local dev.
+Default behaviour (May 2026): every AI call routes through the OpenAI-compatible
+gateway configured at the repo root via `.env`:
 
-To switch to ANY other LLM that exposes an OpenAI-compatible
-`/chat/completions` endpoint (OpenAI, Azure OpenAI, OpenRouter, watsonx via
-its OpenAI-compat layer, vLLM, Ollama, LocalAI, IBM "Bob", etc.), set:
+    MODEL=gpt-5.2-CIO
+    GATEWAY_BASE_URL=https://<host>/v1
+    GATEWAY_API_KEY=sk-...
 
-    LLM_PROVIDER=openai
-    LLM_BASE_URL=https://your-endpoint/v1
-    LLM_API_KEY=sk-...
-    LLM_MODEL=ibm/granite-3-8b-instruct        # or whatever the provider expects
+`get_chat()` returns an object whose `.send_message(UserMessage)` is awaitable
+and returns the assistant text — same shape as
+`emergentintegrations.llm.chat.LlmChat`, so existing call sites work unchanged.
 
-Optional:
+A legacy `emergent` provider (Claude via emergentintegrations) and a generic
+`openai` provider (LLM_BASE_URL / LLM_API_KEY / LLM_MODEL) are still selectable
+via LLM_PROVIDER for fallback / parity with older deployments.
+
+Optional extras for the gateway:
     LLM_TIMEOUT_SECONDS=90
-    LLM_EXTRA_HEADER_<NAME>=value              # add custom headers (each var becomes
-                                               # an HTTP header named <NAME>)
-
-The factory `get_chat()` returns an object whose `.send_message(UserMessage)` is
-awaitable and returns the assistant text — the same shape as
-`emergentintegrations.llm.chat.LlmChat`, so existing call sites just swap one
-line.
+    LLM_EXTRA_HEADER_<NAME>=value          # each var becomes an HTTP header
+    EMBEDDINGS_MODEL=embeddings            # used by get_embeddings()
 """
 from __future__ import annotations
 
 import os
 import logging
-from typing import Any, List, Optional
+from typing import Any, List, Optional, Sequence
 
 import httpx
 
 logger = logging.getLogger(__name__)
 
-# --- Try to import emergentintegrations (still the default) -----------------
+# --- Try to import emergentintegrations (legacy provider) -------------------
 try:
     from emergentintegrations.llm.chat import LlmChat, UserMessage  # type: ignore
     _HAS_EMERGENT = True
@@ -46,12 +44,86 @@ except Exception:  # pragma: no cover - only matters in stripped builds
 
 
 # ----------------------------------------------------------------------------
+# Gateway helpers
+# ----------------------------------------------------------------------------
+def _gateway_base_url() -> str:
+    """First-class gateway URL, with legacy LLM_BASE_URL fallback."""
+    url = (
+        os.environ.get("GATEWAY_BASE_URL")
+        or os.environ.get("LLM_BASE_URL")
+        or ""
+    ).strip()
+    return url.rstrip("/")
+
+
+def _gateway_api_key() -> str:
+    return (
+        os.environ.get("GATEWAY_API_KEY")
+        or os.environ.get("LLM_API_KEY")
+        or ""
+    ).strip()
+
+
+def _gateway_model() -> str:
+    """Resolved chat model for the gateway."""
+    return (
+        os.environ.get("MODEL")
+        or os.environ.get("LLM_MODEL")
+        or "gpt-5.2-CIO"
+    ).strip()
+
+
+def _gateway_embeddings_model() -> str:
+    return (
+        os.environ.get("EMBEDDINGS_MODEL")
+        or os.environ.get("LLM_EMBEDDINGS_MODEL")
+        or "embeddings"
+    ).strip()
+
+
+def _gateway_configured() -> bool:
+    return bool(_gateway_base_url() and _gateway_api_key())
+
+
+def _resolve_provider() -> str:
+    """
+    Pick the provider in this order:
+      1. Explicit LLM_PROVIDER env var, if set
+      2. "gateway" when GATEWAY_BASE_URL+GATEWAY_API_KEY are present
+      3. "emergent" when EMERGENT_LLM_KEY is present
+      4. "gateway" (will raise a clear error at call-time if not configured)
+    """
+    raw = (os.environ.get("LLM_PROVIDER") or "").lower().strip()
+    if raw:
+        return raw
+    if _gateway_configured():
+        return "gateway"
+    if (os.environ.get("EMERGENT_LLM_KEY") or "").strip():
+        return "emergent"
+    return "gateway"
+
+
+def _collect_extra_headers() -> dict:
+    """
+    Any env var named LLM_EXTRA_HEADER_<NAME>=value becomes an HTTP header
+    'NAME: value'. Lets ops add e.g. a tenant id without code changes.
+    """
+    extras: dict = {}
+    prefix = "LLM_EXTRA_HEADER_"
+    for k, v in os.environ.items():
+        if k.startswith(prefix) and v:
+            header_name = k[len(prefix):].replace("_", "-")
+            extras[header_name] = v
+    return extras
+
+
+# ----------------------------------------------------------------------------
 # OpenAI-compatible chat session
 # ----------------------------------------------------------------------------
 class _OpenAICompatChat:
     """
     Thin in-memory chat session that posts to an OpenAI-compatible
-    `/chat/completions` endpoint. Keeps the same interface as LlmChat so we
+    `/chat/completions` endpoint. Same interface as LlmChat so call sites
     can swap providers transparently.
     """
 
@@ -81,13 +153,11 @@ class _OpenAICompatChat:
         self._headers = headers
         self._history: List[dict] = []
 
-    # Match LlmChat's fluent API. Accepts (provider, model) but we only care
-    # about model here -- provider is implicit in the configured base_url.
+    # Match LlmChat's fluent API. When the gateway is in use we intentionally
+    # IGNORE model_hint — there is exactly one MODEL per deployment, so call
+    # sites that pass `model_hint="anthropic:claude-..."` keep working but no
+    # longer override the configured gateway model.
     def with_model(self, *args: Any, **kwargs: Any) -> "_OpenAICompatChat":
-        if len(args) >= 2 and args[1]:
-            self.model = str(args[1])
-        elif "model" in kwargs and kwargs["model"]:
-            self.model = str(kwargs["model"])
         return self
 
     async def send_message(self, msg: Any) -> str:
@@ -107,7 +177,7 @@ class _OpenAICompatChat:
             if resp.status_code >= 400:
                 body = resp.text[:500]
                 raise RuntimeError(
-                    f"LLM provider returned {resp.status_code}: {body}"
+                    f"LLM gateway returned {resp.status_code}: {body}"
                 )
             data = resp.json()
 
@@ -120,21 +190,6 @@ class _OpenAICompatChat:
 
         self._history.append({"role": "assistant", "content": reply})
         return reply
-
-
-def _collect_extra_headers() -> dict:
-    """
-    Any env var named LLM_EXTRA_HEADER_<NAME>=value becomes an HTTP header
-    'NAME: value'. Lets users add e.g. an IBM watsonx project id, a tenant
-    id, or a `X-Bob-Tenant` header without code changes.
-    """
-    extras: dict = {}
-    prefix = "LLM_EXTRA_HEADER_"
-    for k, v in os.environ.items():
-        if k.startswith(prefix) and v:
-            header_name = k[len(prefix):].replace("_", "-")
-            extras[header_name] = v
-    return extras
 
 
 # ----------------------------------------------------------------------------
@@ -150,27 +205,28 @@ def get_chat(
     Returns a chat object compatible with the LlmChat interface
     (.send_message(UserMessage) -> str).
 
-    Provider selection comes from LLM_PROVIDER env var:
-      - "emergent" (default) → emergentintegrations + Claude (uses
-        EMERGENT_LLM_KEY). `model_hint` of the form "anthropic:model-name"
-        controls the model.
-      - "openai" | "openai_compatible" | "custom" | "ibm_bob" → any provider
-        exposing an OpenAI-compatible /chat/completions endpoint, controlled
-        by LLM_BASE_URL / LLM_API_KEY / LLM_MODEL.
+    Provider selection comes from _resolve_provider():
+      - "gateway" (default) → OpenAI-compatible call to GATEWAY_BASE_URL using
+        MODEL + GATEWAY_API_KEY. `model_hint` is ignored on purpose.
+      - "openai" | "openai_compatible" | "custom" | "ibm_bob" → same code path
+        but reading the legacy LLM_BASE_URL / LLM_API_KEY / LLM_MODEL vars.
+      - "emergent" → legacy Claude path via emergentintegrations and
+        EMERGENT_LLM_KEY. `model_hint="anthropic:<model>"` selects the model.
     """
-    provider = (os.environ.get("LLM_PROVIDER") or "emergent").lower().strip()
+    provider = _resolve_provider()
     timeout = float(os.environ.get("LLM_TIMEOUT_SECONDS", "90"))
 
-    if provider in {"openai", "openai_compatible", "custom", "ibm_bob", "bob"}:
-        base_url = (os.environ.get("LLM_BASE_URL") or "https://api.openai.com/v1").strip()
-        api_key = (os.environ.get("LLM_API_KEY") or "").strip()
-        model = (os.environ.get("LLM_MODEL") or "gpt-4o-mini").strip()
+    if provider in {"gateway", "openai", "openai_compatible", "custom", "ibm_bob", "bob"}:
+        base_url = _gateway_base_url() or "https://api.openai.com/v1"
+        api_key = _gateway_api_key()
+        model = _gateway_model()
         if not api_key:
             raise RuntimeError(
-                "LLM_PROVIDER is set to a non-emergent provider but LLM_API_KEY is empty. "
-                "Set LLM_API_KEY in the environment, or switch LLM_PROVIDER=emergent."
+                "LLM gateway is not configured. Set GATEWAY_BASE_URL + GATEWAY_API_KEY "
+                "(and MODEL) in the repo-root .env, or switch LLM_PROVIDER=emergent "
+                "and set EMERGENT_LLM_KEY."
             )
-        chat = _OpenAICompatChat(
+        return _OpenAICompatChat(
             base_url=base_url,
             api_key=api_key,
             model=model,
@@ -179,20 +235,17 @@ def get_chat(
             timeout=timeout,
             extra_headers=_collect_extra_headers(),
         )
-        # `model_hint` like "anthropic:claude-sonnet-4-5-..." is ignored for
-        # custom providers -- the model is decided by LLM_MODEL.
-        return chat
 
-    # ---- default: emergent ----
+    # ---- legacy: emergent ----
     if not _HAS_EMERGENT:
         raise RuntimeError(
-            "emergentintegrations is not installed and LLM_PROVIDER is not 'openai'."
+            "emergentintegrations is not installed and no LLM gateway is configured."
         )
     key = (os.environ.get("EMERGENT_LLM_KEY") or "").strip()
     if not key:
         raise RuntimeError(
-            "EMERGENT_LLM_KEY is empty. Either set EMERGENT_LLM_KEY in backend/.env "
-            "or switch to a custom provider with LLM_PROVIDER=openai."
+            "EMERGENT_LLM_KEY is empty and LLM_PROVIDER=emergent. "
+            "Either set EMERGENT_LLM_KEY or remove LLM_PROVIDER to fall back to the gateway."
         )
     chat = LlmChat(api_key=key, session_id=session_id, system_message=system_message)
     if model_hint and ":" in model_hint:
@@ -203,10 +256,76 @@ def get_chat(
 
 def llm_is_configured() -> bool:
     """Lightweight check used by call sites that want to fall back gracefully."""
-    provider = (os.environ.get("LLM_PROVIDER") or "emergent").lower().strip()
+    provider = _resolve_provider()
     if provider == "emergent":
         return bool((os.environ.get("EMERGENT_LLM_KEY") or "").strip())
-    return bool((os.environ.get("LLM_API_KEY") or "").strip())
+    return _gateway_configured()
 
 
-__all__ = ["get_chat", "llm_is_configured", "UserMessage"]
+def active_model() -> str:
+    """Convenience for logs / UI banners."""
+    if _resolve_provider() == "emergent":
+        return "emergent:claude-sonnet-4-5"
+    return _gateway_model()
+
+
+# ----------------------------------------------------------------------------
+# Embeddings (optional, gateway only)
+# ----------------------------------------------------------------------------
+async def get_embeddings(
+    texts: Sequence[str],
+    *,
+    model: Optional[str] = None,
+    timeout: Optional[float] = None,
+) -> List[List[float]]:
+    """
+    Generate embeddings via the gateway's OpenAI-compatible /embeddings
+    endpoint. Returns one float vector per input string.
+
+    Raises RuntimeError if the gateway is not configured or the response
+    shape is unexpected. Currently nothing in the app calls this — it is
+    provided so future features (semantic search, dedupe, etc.) can plug in.
+    """
+    if not _gateway_configured():
+        raise RuntimeError(
+            "Embeddings require GATEWAY_BASE_URL + GATEWAY_API_KEY to be set."
+        )
+    inputs = [t for t in texts if t is not None]
+    if not inputs:
+        return []
+
+    url = f"{_gateway_base_url()}/embeddings"
+    headers = {
+        "Authorization": f"Bearer {_gateway_api_key()}",
+        "Content-Type": "application/json",
+    }
+    headers.update(_collect_extra_headers())
+    payload = {
+        "model": (model or _gateway_embeddings_model()),
+        "input": inputs,
+    }
+    request_timeout = timeout if timeout is not None else float(
+        os.environ.get("LLM_TIMEOUT_SECONDS", "90")
+    )
+
+    async with httpx.AsyncClient(timeout=request_timeout) as client:
+        resp = await client.post(url, headers=headers, json=payload)
+        if resp.status_code >= 400:
+            raise RuntimeError(
+                f"Embeddings endpoint returned {resp.status_code}: {resp.text[:400]}"
+            )
+        data = resp.json() or {}
+
+    items = data.get("data") if isinstance(data, dict) else None
+    if not isinstance(items, list):
+        raise RuntimeError(f"Unexpected embeddings response shape: {data!r}")
+    return [item.get("embedding", []) for item in items]
+
+
+__all__ = [
+    "get_chat",
+    "get_embeddings",
+    "llm_is_configured",
+    "active_model",
+    "UserMessage",
+]

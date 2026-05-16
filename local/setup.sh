@@ -167,9 +167,32 @@ CORS_ORIGINS="*"
 JWT_SECRET="$JWT_RANDOM"
 EMERGENT_LLM_KEY=""
 EOF
-    ok "Wrote backend/.env (set EMERGENT_LLM_KEY there to enable AI triage)"
+    ok "Wrote backend/.env"
 else
     ok "Found existing backend/.env (left untouched)"
+fi
+
+# Ensure repo-root .env exists. It carries the LLM gateway configuration
+# (MODEL, GATEWAY_BASE_URL, GATEWAY_API_KEY, ...). We copy from .env.example
+# when present so the user only has to fill in the API key.
+ROOT_ENV="$REPO_DIR/.env"
+ROOT_ENV_EXAMPLE="$REPO_DIR/.env.example"
+if [ ! -f "$ROOT_ENV" ]; then
+    if [ -f "$ROOT_ENV_EXAMPLE" ]; then
+        cp "$ROOT_ENV_EXAMPLE" "$ROOT_ENV"
+        ok "Wrote .env from .env.example (set GATEWAY_API_KEY to enable AI features)"
+    else
+        cat > "$ROOT_ENV" <<'EOF'
+MODEL=gpt-5.2-CIO
+GATEWAY_BASE_URL=https://hub-proxy-service.thankfulfield-16b4d5d6.eastus.azurecontainerapps.io/v1
+GATEWAY_API_KEY=
+EMBEDDINGS_MODEL=embeddings
+LLM_TIMEOUT_SECONDS=90
+EOF
+        ok "Wrote .env (set GATEWAY_API_KEY to enable AI features)"
+    fi
+else
+    ok "Found existing .env (left untouched)"
 fi
 
 deactivate || true
@@ -201,7 +224,7 @@ ok "Frontend dependencies installed"
 echo
 printf "${GRN}${BLD}Setup complete!${CLR}\n\n"
 printf "Next steps:\n"
-printf "  ${BLD}1.${CLR} (Optional) Add your Emergent LLM key in ${BLD}backend/.env${CLR} → EMERGENT_LLM_KEY=…\n"
+printf "  ${BLD}1.${CLR} Set your gateway API key in ${BLD}.env${CLR} → GATEWAY_API_KEY=…  (model is ${BLD}gpt-5.2-CIO${CLR})\n"
 printf "  ${BLD}2.${CLR} Start everything:  ${BLU}./local/start.sh${CLR}\n"
 printf "  ${BLD}3.${CLR} Open the app:      ${BLU}http://localhost:3000${CLR}\n\n"
 printf "  Stop:   ${BLU}./local/stop.sh${CLR}\n"

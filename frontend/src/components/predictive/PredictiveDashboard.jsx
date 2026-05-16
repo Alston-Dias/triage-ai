@@ -12,6 +12,7 @@ import {
   triggerPredictiveTriage, resolvePredictiveIncident, acknowledgePredictiveIncident,
   predictiveWSUrl,
 } from '../../lib/api';
+import { useActiveModel } from '../../hooks/useActiveModel';
 
 const METRIC_LABEL = {
   cpu_usage: 'CPU',
@@ -208,12 +209,13 @@ function TrendGraph({ trend }) {
 }
 
 function RecommendationCard({ inc }) {
+  const { model } = useActiveModel();
   if (!inc) return null;
   return (
     <div className="rounded-lg border border-[#1f1f1f] bg-[#0d0d0d] p-4" data-testid="recommendation-card">
       <div className="flex items-center gap-2 mb-2">
         <Sparkles size={14} className="text-[#D4AF37]" />
-        <div className="text-[10px] uppercase tracking-wider text-[#D4AF37]">Preventive recommendation · claude-sonnet-4.5</div>
+        <div className="text-[10px] uppercase tracking-wider text-[#D4AF37]">Preventive recommendation · {model}</div>
       </div>
       <pre className="text-[12.5px] text-neutral-200 whitespace-pre-wrap leading-relaxed font-mono">
         {inc.recommended_action || '—'}
@@ -381,7 +383,7 @@ export default function PredictiveDashboard() {
             Forecast incidents before they happen
           </h2>
           <p className="text-sm text-neutral-400 mt-1 max-w-xl">
-            Isolation-Forest anomaly detection on live service metrics, scored 0–100 and explained by Claude.
+            Isolation-Forest anomaly detection on live service metrics, scored 0–100 and explained by the AI gateway.
           </p>
         </div>
         <button

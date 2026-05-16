@@ -85,11 +85,13 @@ RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/seed.sh && \
 ENV MONGO_URL="mongodb://127.0.0.1:27017" \
     DB_NAME="triageai" \
     CORS_ORIGINS="*" \
-    LLM_PROVIDER="emergent" \
+    LLM_PROVIDER="gateway" \
+    MODEL="gpt-5.2-CIO" \
+    GATEWAY_BASE_URL="https://hub-proxy-service.thankfulfield-16b4d5d6.eastus.azurecontainerapps.io/v1" \
+    GATEWAY_API_KEY="" \
+    EMBEDDINGS_MODEL="embeddings" \
+    LLM_TIMEOUT_SECONDS="90" \
     EMERGENT_LLM_KEY="" \
-    LLM_BASE_URL="" \
-    LLM_API_KEY="" \
-    LLM_MODEL="" \
     PORT="8001"
 
 EXPOSE 8001

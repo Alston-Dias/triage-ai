@@ -1,19 +1,21 @@
 import React from 'react';
 import { PriorityBadge } from './Badges';
 import DeploymentCard from './DeploymentCard';
+import { useActiveModel } from '@/hooks/useActiveModel';
 import { Brain, ShieldAlert, Wrench, Terminal, CheckCircle, Filter, Sparkles, Clock } from 'lucide-react';
 
 const CONF_COLOR = { high: '#30D158', medium: '#D4AF37', low: '#71717A' };
 
 export default function TriagePanel({ result, loading, onResolve }) {
+  const { model } = useActiveModel();
   if (loading) {
     return (
       <div className="flex flex-col h-full">
-        <PanelHeader status="analyzing" />
+        <PanelHeader status="analyzing" model={model} />
         <div className="flex-1 flex items-center justify-center px-8">
           <div className="text-center max-w-sm">
             <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-[#D4AF37]/10 border border-[#D4AF37]/30 text-[11px] text-[#D4AF37] font-medium mb-4">
-              <span className="w-1.5 h-1.5 rounded-full bg-[#D4AF37] live-dot" /> claude-sonnet-4.5
+              <span className="w-1.5 h-1.5 rounded-full bg-[#D4AF37] live-dot" /> {model}
             </div>
             <h3 className="font-display text-2xl font-black tracking-tight">Correlating signals</h3>
             <p className="text-sm text-neutral-400 mt-2 leading-relaxed">
@@ -31,7 +33,7 @@ export default function TriagePanel({ result, loading, onResolve }) {
   if (!result) {
     return (
       <div className="flex flex-col h-full">
-        <PanelHeader status="idle" />
+        <PanelHeader status="idle" model={model} />
         <div className="flex-1 flex items-center justify-center text-center px-10">
           <div className="max-w-xs">
             <div className="w-14 h-14 mx-auto rounded-full bg-[#D4AF37]/10 border border-[#D4AF37]/20 flex items-center justify-center mb-4">
@@ -49,7 +51,7 @@ export default function TriagePanel({ result, loading, onResolve }) {
 
   return (
     <div className="flex flex-col h-full" data-testid="triage-result-panel">
-      <PanelHeader status="complete" />
+      <PanelHeader status="complete" model={model} />
 
       <div className="flex-1 overflow-auto p-6 space-y-6">
         {/* F-01: Deployment card at the very top */}
@@ -154,7 +156,7 @@ export default function TriagePanel({ result, loading, onResolve }) {
   );
 }
 
-function PanelHeader({ status }) {
+function PanelHeader({ status, model }) {
   const map = {
     idle:     { label: 'Idle', color: '#71717A' },
     analyzing:{ label: 'Analyzing…', color: '#D4AF37' },
@@ -168,7 +170,7 @@ function PanelHeader({ status }) {
       </div>
       <div className="flex-1">
         <div className="text-sm font-semibold text-white">AI Triage Engine</div>
-        <div className="text-[11px] text-neutral-500">Claude Sonnet 4.5</div>
+        <div className="text-[11px] text-neutral-500 font-mono" data-testid="triage-active-model">{model || 'AI gateway'}</div>
       </div>
       <span className="text-[11px] font-medium flex items-center gap-1.5" style={{ color: m.color }}>
         <span className="w-1.5 h-1.5 rounded-full" style={{ background: m.color }} />{m.label}

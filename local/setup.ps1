@@ -107,6 +107,27 @@ EMERGENT_LLM_KEY=""
     Ok 'Wrote backend\.env'
 } else { Ok 'Found existing backend\.env (left untouched)' }
 
+# Repo-root .env carries the LLM gateway configuration. Copy from
+# .env.example if available; otherwise scaffold a minimal version. The user
+# must still set GATEWAY_API_KEY before AI features will work.
+$RootEnv = Join-Path $RepoDir '.env'
+$RootEnvExample = Join-Path $RepoDir '.env.example'
+if (-not (Test-Path $RootEnv)) {
+    if (Test-Path $RootEnvExample) {
+        Copy-Item $RootEnvExample $RootEnv
+        Ok 'Wrote .env from .env.example (set GATEWAY_API_KEY to enable AI features)'
+    } else {
+        @"
+MODEL=gpt-5.2-CIO
+GATEWAY_BASE_URL=https://hub-proxy-service.thankfulfield-16b4d5d6.eastus.azurecontainerapps.io/v1
+GATEWAY_API_KEY=
+EMBEDDINGS_MODEL=embeddings
+LLM_TIMEOUT_SECONDS=90
+"@ | Set-Content -Path $RootEnv -NoNewline
+        Ok 'Wrote .env (set GATEWAY_API_KEY to enable AI features)'
+    }
+} else { Ok 'Found existing .env (left untouched)' }
+
 # 3. Frontend --------------------------------------------------------------
 Write-Host ''
 Log 'Setting up frontend…'
@@ -128,7 +149,7 @@ Write-Host ''
 Write-Host 'Setup complete!' -ForegroundColor Green
 Write-Host ''
 Write-Host 'Next steps:'
-Write-Host '  1. (Optional) Add Emergent LLM key in backend\.env (EMERGENT_LLM_KEY=...)'
+Write-Host '  1. Set GATEWAY_API_KEY in .env (model is gpt-5.2-CIO).'
 Write-Host '  2. Start everything:  powershell -ExecutionPolicy Bypass -File local\start.ps1'
 Write-Host '  3. Open the app:      http://localhost:3000'
 Write-Host ''

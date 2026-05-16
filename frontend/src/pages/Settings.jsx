@@ -5,11 +5,13 @@ import { toast, Toaster } from 'sonner';
 import { relTime } from '../lib/format';
 import NotificationsSettings from '../components/NotificationsSettings';
 import CICDToolsSettings from '../components/CICDToolsSettings';
+import { useActiveModel } from '../hooks/useActiveModel';
 
 const TYPES = ['cloudwatch', 'datadog', 'pagerduty', 'grafana', 'prometheus', 'custom'];
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 
 export default function Settings() {
+  const { model, provider } = useActiveModel();
   const [sources, setSources] = useState([]);
   const [showAdd, setShowAdd] = useState(false);
   const [form, setForm] = useState({ name: '', type: 'cloudwatch', webhook_url: '', api_key: '' });
@@ -159,9 +161,9 @@ export default function Settings() {
       </Section>
 
       <Section title="AI Engine" icon={Brain}>
-        <Row label="Triage model" value="claude-sonnet-4-5-20250929" />
-        <Row label="Chat model"   value="claude-sonnet-4-5-20250929" />
-        <Row label="Provider"     value="Anthropic via Emergent Universal Key" />
+        <Row label="Triage model" value={model} />
+        <Row label="Chat model"   value={model} />
+        <Row label="Provider"     value={provider === 'emergent' ? 'Anthropic via Emergent Universal Key' : 'OpenAI-compatible LLM gateway'} />
       </Section>
 
       <NotificationsSettings />

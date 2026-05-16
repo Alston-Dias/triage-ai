@@ -27,6 +27,7 @@ api.interceptors.response.use(
 export const login = (email, password) => api.post('/auth/login', { email, password }).then(r => r.data);
 export const me = () => api.get('/auth/me').then(r => r.data);
 export const listUsers = () => api.get('/auth/users').then(r => r.data);
+export const fetchSystemLLM = () => api.get('/system/llm').then(r => r.data);
 
 // Alerts
 export const fetchAlerts = (status) => api.get('/alerts', { params: status ? { status } : {} }).then(r => r.data);
