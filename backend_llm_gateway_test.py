@@ -12,7 +12,7 @@ from typing import Dict, Any, Optional, List
 import httpx
 
 # Configuration
-BACKEND_URL = "https://infra-preview-3.preview.emergentagent.com/api"
+BACKEND_URL = "https://file-share-center.preview.emergentagent.com/api"
 TEST_EMAIL = "admin@triage.ai"
 TEST_PASSWORD = "admin123"
 
